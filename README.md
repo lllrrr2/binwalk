@@ -1,8 +1,6 @@
 # Binwalk v3
 
-This is an updated version of the Binwalk firmware analysis tool.
-
-It has been re-written in Rust, and is currently in the beta testing phase.
+This is an updated version of the Binwalk firmware analysis tool, re-written in Rust for speed and accuracy.
 
 ![binwalk v3](images/binwalk_animated.svg)
 
@@ -19,6 +17,8 @@ Binwalk can be customized and [integrated](https://github.com/ReFirmLabs/binwalk
 ## How do I get it?
 
 The easiest way to install Binwalk and all dependencies is to [build a Docker image](https://github.com/ReFirmLabs/binwalk/wiki/Building-A-Binwalk-Docker-Image).
+
+Binwalk can also be [installed](https://github.com/ReFirmLabs/binwalk/wiki/Cargo-Installation) via the Rust package manager.
 
 Or, you can [compile from source](https://github.com/ReFirmLabs/binwalk/wiki/Compile-From-Source)!
 

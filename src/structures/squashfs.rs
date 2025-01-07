@@ -102,7 +102,7 @@ pub fn parse_squashfs_header(sqsh_data: &[u8]) -> Result<SquashFSHeader, Structu
         // Sanity check the version number
         if squashfs_version <= MAX_SQUASHFS_VERSION && squashfs_version > 0 {
             let squashfs_header_size: usize;
-            let squashfs_header: HashMap<String, usize>;
+            let mut squashfs_header: HashMap<String, usize>;
 
             // Parse the SquashFS header, using the appropriate version header.
             if squashfs_version == 4 {
@@ -123,6 +123,24 @@ pub fn parse_squashfs_header(sqsh_data: &[u8]) -> Result<SquashFSHeader, Structu
                     }
                     Ok(squash3_header) => {
                         squashfs_header = squash3_header.clone();
+
+                        // Adjust the reported header values for v1 and v2 images
+                        if squashfs_version < 3 {
+                            squashfs_header
+                                .insert("uid_start".to_string(), squashfs_header["uid_start_2"]);
+                            squashfs_header
+                                .insert("guid_start".to_string(), squashfs_header["guid_start_2"]);
+                            squashfs_header
+                                .insert("image_size".to_string(), squashfs_header["bytes_used_2"]);
+                            squashfs_header.insert(
+                                "inode_table_start".to_string(),
+                                squashfs_header["inode_table_start_2"],
+                            );
+                            squashfs_header.insert(
+                                "directory_table_start".to_string(),
+                                squashfs_header["directory_table_start_2"],
+                            );
+                        }
                     }
                 }
             }
@@ -157,14 +175,14 @@ pub fn parse_squashfs_header(sqsh_data: &[u8]) -> Result<SquashFSHeader, Structu
         }
     }
 
-    return Err(StructureError);
+    Err(StructureError)
 }
 
 /// Parse a UID entry for either SquashFSv4 or SquashFSv3
 pub fn parse_squashfs_uid_entry(
     uid_data: &[u8],
     version: usize,
-    endianness: &String,
+    endianness: &str,
 ) -> Result<usize, StructureError> {
     let squashfs_v4_uid_table_structure = vec![("uid_block_ptr", "u64")];
     let squashfs_v3_uid_table_structure = vec![("uid_block_ptr", "u32")];
@@ -172,21 +190,13 @@ pub fn parse_squashfs_uid_entry(
     // Parse one entry from the UID table
     if version == 4 {
         match common::parse(uid_data, &squashfs_v4_uid_table_structure, endianness) {
-            Err(e) => {
-                return Err(e);
-            }
-            Ok(uidv4) => {
-                return Ok(uidv4["uid_block_ptr"]);
-            }
+            Err(e) => Err(e),
+            Ok(uidv4) => Ok(uidv4["uid_block_ptr"]),
         }
     } else {
         match common::parse(uid_data, &squashfs_v3_uid_table_structure, endianness) {
-            Err(e) => {
-                return Err(e);
-            }
-            Ok(uidv3) => {
-                return Ok(uidv3["uid_block_ptr"]);
-            }
+            Err(e) => Err(e),
+            Ok(uidv3) => Ok(uidv3["uid_block_ptr"]),
         }
     }
 }

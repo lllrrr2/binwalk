@@ -3,20 +3,41 @@ use crate::extractors::common::{Chroot, ExtractionResult, Extractor, ExtractorTy
 use crate::structures::common::StructureError;
 use crate::structures::gif::{parse_gif_extension, parse_gif_header, parse_gif_image_descriptor};
 
-/// Defines the internal extractor function for carving out JPEG images
+/// Defines the internal extractor function for carving out GIF images
+///
+/// ```
+/// use std::io::ErrorKind;
+/// use std::process::Command;
+/// use binwalk::extractors::common::ExtractorType;
+/// use binwalk::extractors::gif::gif_extractor;
+///
+/// match gif_extractor().utility {
+///     ExtractorType::None => panic!("Invalid extractor type of None"),
+///     ExtractorType::Internal(func) => println!("Internal extractor OK: {:?}", func),
+///     ExtractorType::External(cmd) => {
+///         if let Err(e) = Command::new(&cmd).output() {
+///             if e.kind() == ErrorKind::NotFound {
+///                 panic!("External extractor '{}' not found", cmd);
+///             } else {
+///                 panic!("Failed to execute external extractor '{}': {}", cmd, e);
+///             }
+///         }
+///     }
+/// }
+/// ```
 pub fn gif_extractor() -> Extractor {
-    return Extractor {
+    Extractor {
         do_not_recurse: true,
         utility: ExtractorType::Internal(extract_gif_image),
         ..Default::default()
-    };
+    }
 }
 
 /// Parses and carves a GIF image from a file
 pub fn extract_gif_image(
-    file_data: &Vec<u8>,
+    file_data: &[u8],
     offset: usize,
-    output_directory: Option<&String>,
+    output_directory: Option<&str>,
 ) -> ExtractionResult {
     const OUTFILE_NAME: &str = "image.gif";
 
@@ -35,7 +56,7 @@ pub fn extract_gif_image(
                 result.success = true;
 
                 // Do extraction, if requested
-                if let Some(_) = output_directory {
+                if output_directory.is_some() {
                     let chroot = Chroot::new(output_directory);
                     result.success =
                         chroot.carve_file(OUTFILE_NAME, file_data, offset, result.size.unwrap());
@@ -44,7 +65,7 @@ pub fn extract_gif_image(
         }
     }
 
-    return result;
+    result
 }
 
 /// Returns the size of the GIF data that follows the GIF header
@@ -93,5 +114,5 @@ fn get_gif_data_size(gif_data: &[u8]) -> Option<usize> {
     }
 
     // Something went wrong, failure
-    return None;
+    None
 }

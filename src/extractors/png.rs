@@ -3,18 +3,39 @@ use crate::extractors::common::{Chroot, ExtractionResult, Extractor, ExtractorTy
 use crate::structures::png::parse_png_chunk_header;
 
 /// Defines the internal extractor function for carving out PNG images
+///
+/// ```
+/// use std::io::ErrorKind;
+/// use std::process::Command;
+/// use binwalk::extractors::common::ExtractorType;
+/// use binwalk::extractors::png::png_extractor;
+///
+/// match png_extractor().utility {
+///     ExtractorType::None => panic!("Invalid extractor type of None"),
+///     ExtractorType::Internal(func) => println!("Internal extractor OK: {:?}", func),
+///     ExtractorType::External(cmd) => {
+///         if let Err(e) = Command::new(&cmd).output() {
+///             if e.kind() == ErrorKind::NotFound {
+///                 panic!("External extractor '{}' not found", cmd);
+///             } else {
+///                 panic!("Failed to execute external extractor '{}': {}", cmd, e);
+///             }
+///         }
+///     }
+/// }
+/// ```
 pub fn png_extractor() -> Extractor {
-    return Extractor {
+    Extractor {
         utility: ExtractorType::Internal(extract_png_image),
         ..Default::default()
-    };
+    }
 }
 
 /// Internal extractor for carving PNG files to disk
 pub fn extract_png_image(
-    file_data: &Vec<u8>,
+    file_data: &[u8],
     offset: usize,
-    output_directory: Option<&String>,
+    output_directory: Option<&str>,
 ) -> ExtractionResult {
     const PNG_HEADER_LEN: usize = 8;
     const OUTFILE_NAME: &str = "image.png";
@@ -31,7 +52,7 @@ pub fn extract_png_image(
             result.success = true;
 
             // If extraction was requested, extract the PNG
-            if let Some(_) = output_directory {
+            if output_directory.is_some() {
                 let chroot = Chroot::new(output_directory);
                 result.success =
                     chroot.carve_file(OUTFILE_NAME, file_data, offset, result.size.unwrap());
@@ -39,7 +60,7 @@ pub fn extract_png_image(
         }
     }
 
-    return result;
+    result
 }
 
 fn get_png_data_size(png_chunk_data: &[u8]) -> Option<usize> {
@@ -56,11 +77,11 @@ fn get_png_data_size(png_chunk_data: &[u8]) -> Option<usize> {
             png_chunk_offset += chunk_header.total_size;
 
             // If this was the last chunk, then png_chunk_offset is the total size of the PNG data
-            if chunk_header.is_last_chunk == true {
+            if chunk_header.is_last_chunk {
                 return Some(png_chunk_offset);
             }
         }
     }
 
-    return None;
+    None
 }

@@ -2,18 +2,39 @@ use crate::extractors::common::{Chroot, ExtractionResult, Extractor, ExtractorTy
 use xz2::stream::{Action, Status, Stream};
 
 /// Defines the internal extractor function for decompressing LZMA/XZ data
+///
+/// ```
+/// use std::io::ErrorKind;
+/// use std::process::Command;
+/// use binwalk::extractors::common::ExtractorType;
+/// use binwalk::extractors::lzma::lzma_extractor;
+///
+/// match lzma_extractor().utility {
+///     ExtractorType::None => panic!("Invalid extractor type of None"),
+///     ExtractorType::Internal(func) => println!("Internal extractor OK: {:?}", func),
+///     ExtractorType::External(cmd) => {
+///         if let Err(e) = Command::new(&cmd).output() {
+///             if e.kind() == ErrorKind::NotFound {
+///                 panic!("External extractor '{}' not found", cmd);
+///             } else {
+///                 panic!("Failed to execute external extractor '{}': {}", cmd, e);
+///             }
+///         }
+///     }
+/// }
+/// ```
 pub fn lzma_extractor() -> Extractor {
-    return Extractor {
+    Extractor {
         utility: ExtractorType::Internal(lzma_decompress),
         ..Default::default()
-    };
+    }
 }
 
 /// Internal extractor for decompressing LZMA/XZ data streams
 pub fn lzma_decompress(
-    file_data: &Vec<u8>,
+    file_data: &[u8],
     offset: usize,
-    output_directory: Option<&String>,
+    output_directory: Option<&str>,
 ) -> ExtractionResult {
     // Output file name
     const OUTPUT_FILE_NAME: &str = "decompressed.bin";
@@ -81,12 +102,12 @@ pub fn lzma_decompress(
                     }
 
                     // Some data was decompressed successfully; if extraction was requested, write the data to disk.
-                    if !output_directory.is_none() {
+                    if output_directory.is_some() {
                         // Number of decompressed bytes in the output buffer
                         let n = (decompressor.total_out() as usize) - bytes_written;
 
                         let chroot = Chroot::new(output_directory);
-                        if chroot.append_to_file(OUTPUT_FILE_NAME, &output_buf[0..n]) == false {
+                        if !chroot.append_to_file(OUTPUT_FILE_NAME, &output_buf[0..n]) {
                             // If writing data to disk fails, report failure and break
                             result.success = false;
                             break;
@@ -97,7 +118,7 @@ pub fn lzma_decompress(
                     }
 
                     // If result.success is true, then everything has been processed and written to disk successfully.
-                    if result.success == true {
+                    if result.success {
                         break;
                     }
                 }
@@ -105,5 +126,5 @@ pub fn lzma_decompress(
         }
     }
 
-    return result;
+    result
 }

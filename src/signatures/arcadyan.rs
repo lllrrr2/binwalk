@@ -1,17 +1,17 @@
 use crate::extractors::arcadyan::extract_obfuscated_lzma;
-use crate::signatures::common::{SignatureError, SignatureResult, CONFIDENCE_MEDIUM};
+use crate::signatures::common::{SignatureError, SignatureResult, CONFIDENCE_HIGH};
 
 /// Human readable description
 pub const DESCRIPTION: &str = "Arcadyan obfuscated LZMA";
 
 /// Obfuscated Arcadyan LZMA magic bytes
 pub fn obfuscated_lzma_magic() -> Vec<Vec<u8>> {
-    return vec![b"\x00\xD5\x08\x00".to_vec()];
+    vec![b"\x00\xD5\x08\x00".to_vec()]
 }
 
 /// Parses obfuscated Arcadyan LZMA data
 pub fn obfuscated_lzma_parser(
-    file_data: &Vec<u8>,
+    file_data: &[u8],
     offset: usize,
 ) -> Result<SignatureResult, SignatureError> {
     // Magic bytes are 0x68 bytes into the actual file
@@ -20,7 +20,7 @@ pub fn obfuscated_lzma_parser(
     // Success return value
     let mut result = SignatureResult {
         description: DESCRIPTION.to_string(),
-        confidence: CONFIDENCE_MEDIUM,
+        confidence: CONFIDENCE_HIGH,
         ..Default::default()
     };
 
@@ -33,12 +33,12 @@ pub fn obfuscated_lzma_parser(
         let dry_run = extract_obfuscated_lzma(file_data, start_offset, None);
 
         // If dry-run was successful, return success
-        if dry_run.success == true {
+        if dry_run.success {
             // Report the actual start of file data
             result.offset = start_offset;
             return Ok(result);
         }
     }
 
-    return Err(SignatureError);
+    Err(SignatureError)
 }

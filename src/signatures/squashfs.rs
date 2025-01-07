@@ -1,5 +1,7 @@
 use crate::common::epoch_to_string;
-use crate::extractors::squashfs::squashfs_v4_be_extractor;
+use crate::extractors::squashfs::{
+    squashfs_be_extractor, squashfs_le_extractor, squashfs_v4_be_extractor,
+};
 use crate::signatures::common::{SignatureError, SignatureResult, CONFIDENCE_HIGH};
 use crate::structures::squashfs::{parse_squashfs_header, parse_squashfs_uid_entry};
 use std::collections::HashMap;
@@ -9,7 +11,7 @@ pub const DESCRIPTION: &str = "SquashFS file system";
 
 /// All of the known magic bytes that could indicate the beginning of a SquashFS image
 pub fn squashfs_magic() -> Vec<Vec<u8>> {
-    return vec![
+    vec![
         b"sqsh".to_vec(),
         b"hsqs".to_vec(),
         b"sqlz".to_vec(),
@@ -17,14 +19,11 @@ pub fn squashfs_magic() -> Vec<Vec<u8>> {
         b"tqsh".to_vec(),
         b"hsqt".to_vec(),
         b"shsq".to_vec(),
-    ];
+    ]
 }
 
 /// Responsible for parsing and validating a suspected SquashFS image header
-pub fn squashfs_parser(
-    file_data: &Vec<u8>,
-    offset: usize,
-) -> Result<SignatureResult, SignatureError> {
+pub fn squashfs_parser(file_data: &[u8], offset: usize) -> Result<SignatureResult, SignatureError> {
     const SQUASHFSV4: usize = 4;
 
     let squashfs_compression_types = HashMap::from([
@@ -39,7 +38,7 @@ pub fn squashfs_parser(
 
     let mut result = SignatureResult {
         size: 0,
-        offset: offset,
+        offset,
         description: DESCRIPTION.to_string(),
         confidence: CONFIDENCE_HIGH,
         ..Default::default()
@@ -93,11 +92,13 @@ pub fn squashfs_parser(
                                     [&squashfs_header.compression]
                                     .to_string();
 
-                                // Standard SquashFSv4 is little endian only; devices that implement a custom big endian version must use a custom extractor
-                                if squashfs_header.major_version == SQUASHFSV4
-                                    && squashfs_header.endianness == "big"
-                                {
+                                // Select the appropriate extractor to use
+                                if squashfs_header.endianness == "little" {
+                                    result.preferred_extractor = Some(squashfs_le_extractor());
+                                } else if squashfs_header.major_version == SQUASHFSV4 {
                                     result.preferred_extractor = Some(squashfs_v4_be_extractor());
+                                } else {
+                                    result.preferred_extractor = Some(squashfs_be_extractor());
                                 }
 
                                 result.size = squashfs_header.image_size;
@@ -120,5 +121,5 @@ pub fn squashfs_parser(
         }
     }
 
-    return Err(SignatureError);
+    Err(SignatureError)
 }

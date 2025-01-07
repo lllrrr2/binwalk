@@ -24,7 +24,7 @@ pub struct ExtractionError;
 
 /// Built-in internal extractors must provide a function conforming to this definition.
 /// Arguments: file_data, offset, output_directory.
-pub type InternalExtractor = fn(&Vec<u8>, usize, Option<&String>) -> ExtractionResult;
+pub type InternalExtractor = fn(&[u8], usize, Option<&str>) -> ExtractionResult;
 
 /// Enum to define either an Internal or External extractor type
 #[derive(Debug, Default, Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -92,15 +92,19 @@ impl Chroot {
     /// ```
     /// use binwalk::extractors::common::Chroot;
     ///
-    /// # std::fs::remove_dir_all("/tmp/foobar");
-    /// let chroot_directory = "/tmp/foobar".to_string();
-    /// let chroot = Chroot::new(Some(&chroot_directory));
+    /// let chroot_dir = std::path::Path::new(&std::env::temp_dir())
+    ///     .join("binwalk_unit_tests")
+    ///     .display()
+    ///     .to_string();
     ///
-    /// assert_eq!(chroot.chroot_directory, "/tmp/foobar");
-    /// assert_eq!(std::path::Path::new("/tmp/foobar").exists(), true);
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// # std::fs::remove_dir_all(&chroot_dir);
+    /// let chroot = Chroot::new(Some(&chroot_dir));
+    ///
+    /// assert_eq!(&chroot.chroot_directory, &chroot_dir);
+    /// assert_eq!(std::path::Path::new(&chroot_dir).exists(), true);
+    /// # std::fs::remove_dir_all(&chroot_dir);
     /// ```
-    pub fn new(chroot_directory: Option<&String>) -> Chroot {
+    pub fn new(chroot_directory: Option<&str>) -> Chroot {
         let mut chroot_instance = Chroot {
             ..Default::default()
         };
@@ -117,14 +121,14 @@ impl Chroot {
                         chroot_instance.chroot_directory = pathbuf.display().to_string();
                     }
                     Err(_) => {
-                        chroot_instance.chroot_directory = chroot_dir.clone();
+                        chroot_instance.chroot_directory = chroot_dir.to_string();
                     }
                 }
             }
         }
 
         // Create the chroot directory if it does not exist
-        if path::Path::new(&chroot_instance.chroot_directory).exists() == false {
+        if !path::Path::new(&chroot_instance.chroot_directory).exists() {
             match fs::create_dir_all(&chroot_instance.chroot_directory) {
                 Ok(_) => {
                     debug!(
@@ -141,7 +145,7 @@ impl Chroot {
             }
         }
 
-        return chroot_instance;
+        chroot_instance
     }
 
     /// Joins two paths, ensuring that the final path does not traverse outside of the chroot directory.
@@ -150,22 +154,41 @@ impl Chroot {
     ///
     /// ```
     /// use binwalk::extractors::common::Chroot;
+    /// use std::path::MAIN_SEPARATOR;
     ///
-    /// let chroot_directory = "/tmp/foobar".to_string();
+    /// let chroot_dir = std::path::Path::new(&std::env::temp_dir())
+    ///     .join("binwalk_unit_tests")
+    ///     .display()
+    ///     .to_string();
     ///
-    /// # std::fs::remove_dir_all("/tmp/foobar");
-    /// let chroot = Chroot::new(Some(&chroot_directory));
+    /// # std::fs::remove_dir_all(&chroot_dir);
+    /// let chroot = Chroot::new(Some(&chroot_dir));
     ///
-    /// let path1 = chroot.safe_path_join("/etc", "passwd");
-    /// let path2 = chroot.safe_path_join("/etc", "../../passwd");
-    /// let path3 = chroot.safe_path_join("../../../etc", "/passwd");
-    /// let path4 = chroot.safe_path_join("/tmp/foobar/", "/etc/passwd");
+    /// let dir_name = "etc";
+    /// let file_name = "passwd";
+    /// let abs_path = format!("{}{}{}{}", MAIN_SEPARATOR, dir_name, MAIN_SEPARATOR, file_name);
+    /// let abs_path_dir = format!("{}{}", MAIN_SEPARATOR, dir_name);
+    /// let rel_path_dir = format!("..{}..{}..{}{}", MAIN_SEPARATOR, MAIN_SEPARATOR, MAIN_SEPARATOR, dir_name);
+    /// let abs_path_file = format!("{}{}", MAIN_SEPARATOR, file_name);
+    /// let rel_path_file = format!("..{}..{}..{}{}", MAIN_SEPARATOR, MAIN_SEPARATOR, MAIN_SEPARATOR, file_name);
     ///
-    /// assert_eq!(path1, "/tmp/foobar/etc/passwd");
-    /// assert_eq!(path2, "/tmp/foobar/passwd");
-    /// assert_eq!(path3, "/tmp/foobar/etc/passwd");
-    /// assert_eq!(path4, "/tmp/foobar/etc/passwd");
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// let path1 = chroot.safe_path_join(&abs_path_dir, file_name);
+    /// let expected_path1 = std::path::Path::new(&chroot_dir).join(dir_name).join(file_name);
+    ///
+    /// let path2 = chroot.safe_path_join(&abs_path_dir, &rel_path_file);
+    /// let expected_path2 = std::path::Path::new(&chroot_dir).join(file_name);
+    ///
+    /// let path3 = chroot.safe_path_join(&rel_path_dir, &abs_path_file);
+    /// let expected_path3 = std::path::Path::new(&chroot_dir).join(dir_name).join(file_name);
+    ///
+    /// let path4 = chroot.safe_path_join(&chroot_dir, &abs_path);
+    /// let expected_path4 = std::path::Path::new(&chroot_dir).join(dir_name).join(file_name);
+    ///
+    /// assert_eq!(path1, expected_path1.display().to_string());
+    /// assert_eq!(path2, expected_path2.display().to_string());
+    /// assert_eq!(path3, expected_path3.display().to_string());
+    /// assert_eq!(path4, expected_path4.display().to_string());
+    /// # std::fs::remove_dir_all(&chroot_dir);
     /// ```
     pub fn safe_path_join(&self, path1: impl Into<String>, path2: impl Into<String>) -> String {
         // Join and sanitize both paths; retain the leading '/' (if there is one)
@@ -176,7 +199,10 @@ impl Chroot {
 
         // If the joined path does not start with the chroot directory,
         // prepend the chroot directory to the final joined path.
-        if joined_path.starts_with(&self.chroot_directory) == false {
+        // on Windows: If no chroot directory is specified, skip the operation
+        if cfg!(windows) && self.chroot_directory == path::MAIN_SEPARATOR.to_string() {
+            // do nothing and skip
+        } else if !joined_path.starts_with(&self.chroot_directory) {
             joined_path = format!(
                 "{}{}{}",
                 self.chroot_directory,
@@ -185,7 +211,7 @@ impl Chroot {
             );
         }
 
-        return self.strip_double_slash(&joined_path);
+        self.strip_double_slash(&joined_path)
     }
 
     /// Given a file path, returns a sanitized path that is chrooted inside the specified chroot directory.
@@ -195,15 +221,20 @@ impl Chroot {
     /// ```
     /// use binwalk::extractors::common::Chroot;
     ///
-    /// let chroot_dir = "/tmp/foobar/".to_string();
+    /// let chroot_dir = std::path::Path::new(&std::env::temp_dir())
+    ///     .join("binwalk_unit_tests")
+    ///     .display()
+    ///     .to_string();
+    ///
+    /// let file_name = "test.txt";
     ///
     /// let chroot = Chroot::new(Some(&chroot_dir));
-    /// let path = chroot.chrooted_path("test.txt");
+    /// let path = chroot.chrooted_path(file_name);
     ///
-    /// assert_eq!(path, "/tmp/foobar/test.txt");
+    /// assert_eq!(path, std::path::Path::new(&chroot_dir).join(file_name).display().to_string());
     /// ```
     pub fn chrooted_path(&self, file_path: impl Into<String>) -> String {
-        return self.safe_path_join(file_path, &"".to_string());
+        self.safe_path_join(file_path, "".to_string())
     }
 
     /// Creates a regular file in the chrooted directory and writes the provided data to it.
@@ -211,22 +242,31 @@ impl Chroot {
     /// ## Example
     ///
     /// ```
+    /// # fn main() { #[allow(non_snake_case)] fn _doctest_main_src_extractors_common_rs_213_0() -> Result<(), Box<dyn std::error::Error>> {
     /// use binwalk::extractors::common::Chroot;
     ///
-    /// let chroot_dir = "/tmp/foobar".to_string();
     /// let file_data: &[u8] = b"foobar";
     ///
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// let file_name = "created_file.txt";
+    ///
+    /// let chroot_dir = std::path::Path::new("tests")
+    ///     .join("binwalk_unit_tests")
+    ///     .display()
+    ///     .to_string();
+    ///
+    /// # std::fs::remove_dir_all(&chroot_dir);
     /// let chroot = Chroot::new(Some(&chroot_dir));
     ///
-    /// assert_eq!(chroot.create_file("created_file.txt", file_data), true);
-    /// assert_eq!(std::fs::read_to_string("/tmp/foobar/created_file.txt").unwrap(), "foobar");
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// assert_eq!(chroot.create_file(file_name, file_data), true);
+    /// assert_eq!(std::fs::read_to_string(std::path::Path::new(&chroot_dir).join(file_name))?, std::str::from_utf8(file_data)?);
+    /// # std::fs::remove_dir_all(&chroot_dir);
+    /// # Ok(())
+    /// # } _doctest_main_src_extractors_common_rs_213_0(); }
     /// ```
     pub fn create_file(&self, file_path: impl Into<String>, file_data: &[u8]) -> bool {
         let safe_file_path: String = self.chrooted_path(file_path);
 
-        if path::Path::new(&safe_file_path).exists() == false {
+        if !path::Path::new(&safe_file_path).exists() {
             match fs::write(safe_file_path.clone(), file_data) {
                 Ok(_) => {
                     return true;
@@ -242,7 +282,7 @@ impl Chroot {
             );
         }
 
-        return false;
+        false
     }
 
     /// Carve data and write it to a new file.
@@ -250,17 +290,28 @@ impl Chroot {
     /// ## Example
     ///
     /// ```
+    /// # fn main() { #[allow(non_snake_case)] fn _doctest_main_src_extractors_common_rs_255_0() -> Result<(), Box<dyn std::error::Error>> {
     /// use binwalk::extractors::common::Chroot;
     ///
-    /// let chroot_dir = "/tmp/foobar".to_string();
-    /// let file_data_with_trailing_junk: &[u8] = b"foobarJUNK";
+    /// const CARVE_SIZE: usize = 6;
     ///
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// let data: &[u8] = b"foobarJUNK";
+    ///
+    /// let file_name = "carved_file.txt";
+    ///
+    /// let chroot_dir = std::path::Path::new("tests")
+    ///     .join("binwalk_unit_tests")
+    ///     .display()
+    ///     .to_string();
+    ///
+    /// # std::fs::remove_dir_all(&chroot_dir);
     /// let chroot = Chroot::new(Some(&chroot_dir));
     ///
-    /// assert_eq!(chroot.carve_file("carved_file.txt", file_data_with_trailing_junk, 0, 6), true);
-    /// assert_eq!(std::fs::read_to_string("/tmp/foobar/carved_file.txt").unwrap(), "foobar");
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// assert_eq!(chroot.carve_file(file_name, data, 0, CARVE_SIZE), true);
+    /// assert_eq!(std::fs::read_to_string(std::path::Path::new(&chroot_dir).join(file_name))?, std::str::from_utf8(&data[0..CARVE_SIZE])?);
+    /// # std::fs::remove_dir_all(&chroot_dir);
+    /// # Ok(())
+    /// } _doctest_main_src_extractors_common_rs_255_0(); }
     /// ```
     pub fn carve_file(
         &self,
@@ -280,7 +331,7 @@ impl Chroot {
             );
         }
 
-        return retval;
+        retval
     }
 
     /// Creates a device file in the chroot directory.
@@ -294,7 +345,7 @@ impl Chroot {
         minor: usize,
     ) -> bool {
         let device_file_contents: String = format!("{} {} {}", device_type, major, minor);
-        return self.create_file(file_path, &device_file_contents.clone().into_bytes());
+        self.create_file(file_path, &device_file_contents.clone().into_bytes())
     }
 
     /// Creates a character device file in the chroot directory.
@@ -304,18 +355,26 @@ impl Chroot {
     /// ## Example
     ///
     /// ```
+    /// # fn main() { #[allow(non_snake_case)] fn _doctest_main_src_extractors_common_rs_312_0() -> Result<(), Box<dyn std::error::Error>> {
     /// use binwalk::extractors::common::Chroot;
     ///
-    /// let chroot_dir = "/tmp/foobar".to_string();
+    /// let chroot_dir = std::path::Path::new("tests")
+    ///     .join("binwalk_unit_tests")
+    ///     .display()
+    ///     .to_string();
+    ///
     /// let dev_major: usize = 1;
     /// let dev_minor: usize = 2;
+    /// let file_name = "char_device";
     ///
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// # std::fs::remove_dir_all(&chroot_dir);
     /// let chroot = Chroot::new(Some(&chroot_dir));
     ///
-    /// assert_eq!(chroot.create_character_device("char_device", dev_major, dev_minor), true);
-    /// assert_eq!(std::fs::read_to_string("/tmp/foobar/char_device").unwrap(), "c 1 2");
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// assert_eq!(chroot.create_character_device(file_name, dev_major, dev_minor), true);
+    /// assert_eq!(std::fs::read_to_string(std::path::Path::new(&chroot_dir).join(file_name))?, "c 1 2");
+    /// # std::fs::remove_dir_all(&chroot_dir);
+    /// # Ok(())
+    /// # } _doctest_main_src_extractors_common_rs_312_0(); }
     /// ```
     pub fn create_character_device(
         &self,
@@ -323,7 +382,7 @@ impl Chroot {
         major: usize,
         minor: usize,
     ) -> bool {
-        return self.create_device(file_path, "c", major, minor);
+        self.create_device(file_path, "c", major, minor)
     }
 
     /// Creates a block device file in the chroot directory.
@@ -333,18 +392,26 @@ impl Chroot {
     /// ## Example
     ///
     /// ```
+    /// # fn main() { #[allow(non_snake_case)] fn _doctest_main_src_extractors_common_rs_345_0() -> Result<(), Box<dyn std::error::Error>> {
     /// use binwalk::extractors::common::Chroot;
     ///
-    /// let chroot_dir = "/tmp/foobar".to_string();
+    /// let chroot_dir = std::path::Path::new("tests")
+    ///     .join("binwalk_unit_tests")
+    ///     .display()
+    ///     .to_string();
+    ///
     /// let dev_major: usize = 1;
     /// let dev_minor: usize = 2;
+    /// let file_name = "block_device";
     ///
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// # std::fs::remove_dir_all(&chroot_dir);
     /// let chroot = Chroot::new(Some(&chroot_dir));
     ///
-    /// assert_eq!(chroot.create_block_device("block_device", dev_major, dev_minor), true);
-    /// assert_eq!(std::fs::read_to_string("/tmp/foobar/block_device").unwrap(), "b 1 2");
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// assert_eq!(chroot.create_block_device(file_name, dev_major, dev_minor), true);
+    /// assert_eq!(std::fs::read_to_string(std::path::Path::new(&chroot_dir).join(file_name))?, "b 1 2");
+    /// # std::fs::remove_dir_all(&chroot_dir);
+    /// # Ok(())
+    /// # } _doctest_main_src_extractors_common_rs_345_0(); }
     /// ```
     pub fn create_block_device(
         &self,
@@ -352,7 +419,7 @@ impl Chroot {
         major: usize,
         minor: usize,
     ) -> bool {
-        return self.create_device(file_path, "b", major, minor);
+        self.create_device(file_path, "b", major, minor)
     }
 
     /// Creates a fifo file in the chroot directory.
@@ -362,19 +429,27 @@ impl Chroot {
     /// ## Example
     ///
     /// ```
+    /// # fn main() { #[allow(non_snake_case)] fn _doctest_main_src_extractors_common_rs_377_0() -> Result<(), Box<dyn std::error::Error>> {
     /// use binwalk::extractors::common::Chroot;
     ///
-    /// let chroot_dir = "/tmp/foobar".to_string();
+    /// let chroot_dir = std::path::Path::new("tests")
+    ///     .join("binwalk_unit_tests")
+    ///     .display()
+    ///     .to_string();
     ///
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// let file_name = "fifo_file";
+    ///
+    /// # std::fs::remove_dir_all(&chroot_dir);
     /// let chroot = Chroot::new(Some(&chroot_dir));
     ///
-    /// assert_eq!(chroot.create_fifo("fifo_file"), true);
-    /// assert_eq!(std::fs::read_to_string("/tmp/foobar/fifo_file").unwrap(), "fifo");
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// assert_eq!(chroot.create_fifo(file_name), true);
+    /// assert_eq!(std::fs::read_to_string(std::path::Path::new(&chroot_dir).join(file_name))?, "fifo");
+    /// # std::fs::remove_dir_all(&chroot_dir);
+    /// # Ok(())
+    /// # } _doctest_main_src_extractors_common_rs_377_0(); }
     /// ```
     pub fn create_fifo(&self, file_path: impl Into<String>) -> bool {
-        return self.create_file(file_path, b"fifo");
+        self.create_file(file_path, b"fifo")
     }
 
     /// Creates a socket file in the chroot directory.
@@ -384,19 +459,27 @@ impl Chroot {
     /// ## Example
     ///
     /// ```
+    /// # fn main() { #[allow(non_snake_case)] fn _doctest_main_src_extractors_common_rs_401_0() -> Result<(), Box<dyn std::error::Error>> {
     /// use binwalk::extractors::common::Chroot;
     ///
-    /// let chroot_dir = "/tmp/foobar".to_string();
+    /// let chroot_dir = std::path::Path::new("tests")
+    ///     .join("binwalk_unit_tests")
+    ///     .display()
+    ///     .to_string();
     ///
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// let file_name = "socket_file";
+    ///
+    /// # std::fs::remove_dir_all(&chroot_dir);
     /// let chroot = Chroot::new(Some(&chroot_dir));
     ///
-    /// assert_eq!(chroot.create_socket("socket_file"), true);
-    /// assert_eq!(std::fs::read_to_string("/tmp/foobar/socket_file").unwrap(), "socket");
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// assert_eq!(chroot.create_socket(file_name), true);
+    /// assert_eq!(std::fs::read_to_string(std::path::Path::new(&chroot_dir).join(file_name))?, "socket");
+    /// # std::fs::remove_dir_all(&chroot_dir);
+    /// # Ok(())
+    /// # } _doctest_main_src_extractors_common_rs_401_0(); }
     /// ```
     pub fn create_socket(&self, file_path: impl Into<String>) -> bool {
-        return self.create_file(file_path, b"socket");
+        self.create_file(file_path, b"socket")
     }
 
     /// Append the provided data to the specified file in the chroot directory.
@@ -406,22 +489,30 @@ impl Chroot {
     /// ## Example
     ///
     /// ```
+    /// # fn main() { #[allow(non_snake_case)] fn _doctest_main_src_extractors_common_rs_426_0() -> Result<(), Box<dyn std::error::Error>> {
     /// use binwalk::extractors::common::Chroot;
     ///
-    /// let chroot_dir = "/tmp/foobar".to_string();
-    /// let my_file_data: &[u8] = b"foobar";
+    /// let chroot_dir = std::path::Path::new("tests")
+    ///     .join("binwalk_unit_tests")
+    ///     .display()
+    ///     .to_string();
     ///
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// let file_data: &[u8] = b"foobar";
+    /// let file_name = "append.txt";
+    ///
+    /// # std::fs::remove_dir_all(&chroot_dir);
     /// let chroot = Chroot::new(Some(&chroot_dir));
     ///
-    /// assert_eq!(chroot.append_to_file("append.txt", my_file_data), true);
-    /// assert_eq!(std::fs::read_to_string("/tmp/foobar/append.txt").unwrap(), "foobar");
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// assert_eq!(chroot.append_to_file(file_name, file_data), true);
+    /// assert_eq!(std::fs::read_to_string(std::path::Path::new(&chroot_dir).join(file_name))?, std::str::from_utf8(file_data)?);
+    /// # std::fs::remove_dir_all(&chroot_dir);
+    /// # Ok(())
+    /// # } _doctest_main_src_extractors_common_rs_426_0(); }
     /// ```
     pub fn append_to_file(&self, file_path: impl Into<String>, data: &[u8]) -> bool {
         let safe_file_path: String = self.chrooted_path(file_path);
 
-        if self.is_symlink(&safe_file_path) == false {
+        if !self.is_symlink(&safe_file_path) {
             match fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -446,7 +537,7 @@ impl Chroot {
             error!("Attempted to append data to a symlink: {}", safe_file_path);
         }
 
-        return false;
+        false
     }
 
     /// Creates a directory in the chroot directory.
@@ -458,14 +549,19 @@ impl Chroot {
     /// ```
     /// use binwalk::extractors::common::Chroot;
     ///
-    /// let chroot_dir = "/tmp/foobar".to_string();
+    /// let chroot_dir = std::path::Path::new("tests")
+    ///     .join("binwalk_unit_tests")
+    ///     .display()
+    ///     .to_string();
     ///
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// let dir_name = "my_directory";
+    ///
+    /// # std::fs::remove_dir_all(&chroot_dir);
     /// let chroot = Chroot::new(Some(&chroot_dir));
     ///
-    /// assert_eq!(chroot.create_directory("/usr/bin/"), true);
-    /// assert_eq!(std::path::Path::new("/tmp/foobar/usr/bin").exists(), true);
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// assert_eq!(chroot.create_directory(dir_name), true);
+    /// assert_eq!(std::path::Path::new(&chroot_dir).join(dir_name).exists(), true);
+    /// # std::fs::remove_dir_all(&chroot_dir);
     /// ```
     pub fn create_directory(&self, dir_path: impl Into<String>) -> bool {
         let safe_dir_path: String = self.chrooted_path(dir_path);
@@ -479,7 +575,7 @@ impl Chroot {
             }
         }
 
-        return false;
+        false
     }
 
     /// Set executable permissions on an existing file in the chroot directory.
@@ -489,14 +585,19 @@ impl Chroot {
     /// ```
     /// use binwalk::extractors::common::Chroot;
     ///
-    /// let chroot_dir = "/tmp/foobar".to_string();
+    /// let chroot_dir = std::path::Path::new("tests")
+    ///     .join("binwalk_unit_tests")
+    ///     .display()
+    ///     .to_string();
     ///
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// let file_name = "runme.exe";
+    ///
+    /// # std::fs::remove_dir_all(&chroot_dir);
     /// let chroot = Chroot::new(Some(&chroot_dir));
-    /// chroot.create_file("runme.exe", b"AAAA");
+    /// chroot.create_file(file_name, b"AAAA");
     ///
-    /// assert_eq!(chroot.make_executable("runme.exe"), true);
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// assert_eq!(chroot.make_executable(file_name), true);
+    /// # std::fs::remove_dir_all(&chroot_dir);
     /// ```
     pub fn make_executable(&self, file_path: impl Into<String>) -> bool {
         // Make the file globally executable
@@ -537,37 +638,45 @@ impl Chroot {
             }
         }
 
-        return false;
+        false
     }
 
     /// Creates a symbolic link in the chroot directory, named `symlink_path`, which points to `target_path`.
     ///
     /// Note that both the symlink and target paths will be sanitized to stay in the chroot directory.
-    /// Both the symlink and target paths will be *absolute*, meaning that symlinks will break if the
-    /// symlink is later moved to a different absolute directory.
+    /// Both the target path will be converted into a path relative to the symlink file path.
     ///
     /// ## Example
     ///
     /// ```
+    /// # fn main() { #[allow(non_snake_case)] fn _doctest_main_src_extractors_common_rs_571_0() -> Result<(), Box<dyn std::error::Error>> {
     /// use binwalk::extractors::common::Chroot;
     ///
-    /// let chroot_dir = "/tmp/foobar".to_string();
+    /// let chroot_dir = std::path::Path::new("tests")
+    ///     .join("binwalk_unit_tests")
+    ///     .display()
+    ///     .to_string();
     ///
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// let symlink_name = "symlink";
+    /// let target_path = "target";
+    ///
+    /// let expected_symlink_path = std::path::Path::new(&chroot_dir).join(symlink_name);
+    /// let expected_target_path = std::path::Path::new(&chroot_dir).join(target_path);
+    ///
+    /// # std::fs::remove_dir_all(&chroot_dir);
     /// let chroot = Chroot::new(Some(&chroot_dir));
     ///
-    /// assert_eq!(chroot.create_symlink("symlink", "/"), true);
-    /// assert_eq!(std::fs::canonicalize("/tmp/foobar/symlink").unwrap().to_str(), Some("/tmp/foobar"));
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// assert_eq!(chroot.create_symlink(symlink_name, target_path), true);
+    /// assert_eq!(std::fs::canonicalize(expected_symlink_path)?.to_str(), expected_target_path.to_str());
+    /// # std::fs::remove_dir_all(&chroot_dir);
+    /// # Ok(())
+    /// # } _doctest_main_src_extractors_common_rs_571_0(); }
     /// ```
     pub fn create_symlink(
         &self,
         symlink_path: impl Into<String>,
         target_path: impl Into<String>,
     ) -> bool {
-        let safe_target: String;
-        let safe_target_path: &path::Path;
-
         let target = target_path.into();
         let symlink = symlink_path.into();
 
@@ -575,44 +684,77 @@ impl Chroot {
         let safe_symlink = self.chrooted_path(&symlink);
         let safe_symlink_path = path::Path::new(&safe_symlink);
 
-        if target.starts_with(path::MAIN_SEPARATOR) {
+        // Normalize the symlink target path to a chrooted absolute path
+        let safe_target = if target.starts_with(path::MAIN_SEPARATOR) {
             // If the target path is absolute, just chroot it inside the chroot directory
-            safe_target = self.chrooted_path(&target);
-            safe_target_path = path::Path::new(&safe_target);
+            self.chrooted_path(&target)
         } else {
-            // Else, the target path is relative to the symlink file's directory
-            let relative_dir: String;
-
             // Get the symlink file's parent directory path
-            match safe_symlink_path.parent() {
+            let relative_dir: String = match safe_symlink_path.parent() {
                 None => {
                     // There is no parent, or parent is the root directory; assume the root directory
-                    relative_dir = path::MAIN_SEPARATOR.to_string();
+                    path::MAIN_SEPARATOR.to_string()
                 }
                 Some(parent_dir) => {
                     // Got the parent directory
-                    relative_dir = parent_dir.display().to_string();
+                    parent_dir.display().to_string()
                 }
-            }
+            };
 
             // Join the target path with its relative directory, ensuring it does not traverse outside
             // the specified chroot directory
-            safe_target = self.safe_path_join(&relative_dir, &target);
-            safe_target_path = path::Path::new(&safe_target);
+            self.safe_path_join(&relative_dir, &target)
+        };
+
+        // Remove the chroot directory from the target and symlink paths.
+        // This results in each being an absolute path that is relative to the chroot directory,
+        // e.g., '/my_chroot_dir/bin/busybox' -> '/bin/busybox'.
+        //
+        // Note: need at least one leading '/', so if the chroot directory is just '/', just use the string as-is.
+        let mut safe_target_rel_path = if self.chroot_directory == path::MAIN_SEPARATOR.to_string()
+        {
+            safe_target.clone()
+        } else {
+            safe_target.replacen(&self.chroot_directory, "", 1)
+        };
+
+        let safe_symlink_rel_path = if self.chroot_directory == path::MAIN_SEPARATOR.to_string() {
+            safe_symlink.clone()
+        } else {
+            safe_symlink.replacen(&self.chroot_directory, "", 1)
+        };
+
+        // Count the number of path separators (minus the leading one) and an '../' to the target
+        // path for each; e.g., '/bin/busybox' -> '..//bin/busybox'.
+        for _i in 0..safe_symlink_rel_path.matches(path::MAIN_SEPARATOR).count() - 1 {
+            safe_target_rel_path = format!("..{}{}", path::MAIN_SEPARATOR, safe_target_rel_path);
         }
+
+        // Add a '.' at the beginning of any paths that start with '/', e.g., '/tmp' -> './tmp'.
+        if safe_target_rel_path.starts_with(path::MAIN_SEPARATOR) {
+            safe_target_rel_path = format!(".{}", safe_target_rel_path);
+        }
+
+        // Replace any instances of '//' with '/'
+        safe_target_rel_path = self.strip_double_slash(&safe_target_rel_path);
+
+        // The target path is now a safely chrooted path that is relative to the symlink file path.
+        // Ex:
+        //
+        //     Original symlink: "/my_chroot_dir/usr/sbin/ls" is a symlink to "/bin/busybox"
+        //     Safe relative symlink: "/my_chroot_dir/usr/sbin/ls" is a symlink to "./../../bin/busybox"
+        let safe_target_path = path::Path::new(&safe_target_rel_path);
 
         #[cfg(unix)]
         {
-            match unix::fs::symlink(&safe_target_path, &safe_symlink_path) {
-                Ok(_) => {
-                    return true;
-                }
+            match unix::fs::symlink(safe_target_path, safe_symlink_path) {
+                Ok(_) => true,
                 Err(e) => {
                     error!(
                         "Failed to create symlink from {} -> {}: {}",
                         symlink, target, e
                     );
-                    return false;
+                    false
                 }
             }
         }
@@ -639,17 +781,17 @@ impl Chroot {
     }
 
     /// Returns true if the file path is a symlink.
-    fn is_symlink(&self, file_path: &String) -> bool {
+    fn is_symlink(&self, file_path: &str) -> bool {
         if let Ok(metadata) = fs::symlink_metadata(file_path) {
             return metadata.file_type().is_symlink();
         }
 
-        return false;
+        false
     }
 
     /// Replace `//` with `/`. This is for asthetics only.
-    fn strip_double_slash(&self, path: &String) -> String {
-        let mut stripped_path = path.clone();
+    fn strip_double_slash(&self, path: &str) -> String {
+        let mut stripped_path = path.to_owned();
         let single_slash = path::MAIN_SEPARATOR.to_string();
         let double_slash = format!("{}{}", single_slash, single_slash);
 
@@ -657,17 +799,17 @@ impl Chroot {
             stripped_path = stripped_path.replace(&double_slash, &single_slash);
         }
 
-        return stripped_path;
+        stripped_path
     }
 
     /// Interprets a given path containing '..' directories.
-    fn sanitize_path(&self, file_path: &String, preserve_root_path_sep: bool) -> String {
+    fn sanitize_path(&self, file_path: &str, preserve_root_path_sep: bool) -> String {
         const DIR_TRAVERSAL: &str = "..";
 
         let mut exclude_indicies: Vec<usize> = vec![];
         let mut sanitized_path: String = "".to_string();
 
-        if preserve_root_path_sep == true && file_path.starts_with(path::MAIN_SEPARATOR) {
+        if preserve_root_path_sep && file_path.starts_with(path::MAIN_SEPARATOR) {
             sanitized_path = path::MAIN_SEPARATOR.to_string();
         }
 
@@ -675,9 +817,9 @@ impl Chroot {
         let path_parts: Vec<&str> = file_path.split(path::MAIN_SEPARATOR).collect();
 
         // Loop through each part of the file path
-        for i in 0..path_parts.len() {
+        for (i, path_part) in path_parts.iter().enumerate() {
             // If this part of the path is '..', don't include it in the final sanitized path
-            if path_parts[i] == DIR_TRAVERSAL {
+            if *path_part == DIR_TRAVERSAL {
                 exclude_indicies.push(i);
                 if i > 0 {
                     // Walk backwards through the path parts until a non-excluded part is found, then mark that part for exclusion as well
@@ -688,30 +830,33 @@ impl Chroot {
                     exclude_indicies.push(j);
                 }
             // If this part of the path is an empty string, don't include that either (happens if the original file path has '//' in it)
-            } else if path_parts[i].len() == 0 {
+            } else if path_part.is_empty() {
                 exclude_indicies.push(i);
             }
         }
 
         // Concatenate each non-excluded part of the file path, with each part separated by '/'
-        for i in 0..path_parts.len() {
-            if exclude_indicies.contains(&i) == false {
-                sanitized_path = format!(
-                    "{}{}{}",
-                    sanitized_path,
-                    path::MAIN_SEPARATOR,
-                    path_parts[i]
-                );
+        for (i, path_part) in path_parts.iter().enumerate() {
+            if !exclude_indicies.contains(&i) {
+                #[cfg(windows)]
+                {
+                    // on Windows: in the first loop run, we cannot really prepend a '\' to drive letters like 'C:'
+                    if sanitized_path.is_empty() {
+                        sanitized_path = path_part.to_string();
+                        continue;
+                    }
+                }
+                sanitized_path = format!("{}{}{}", sanitized_path, path::MAIN_SEPARATOR, path_part);
             }
         }
 
-        return self.strip_double_slash(&sanitized_path);
+        self.strip_double_slash(&sanitized_path)
     }
 }
 
 /// Recursively walks a given directory and returns a list of regular non-zero size files in the given directory path.
 #[allow(dead_code)]
-pub fn get_extracted_files(directory: &String) -> Vec<String> {
+pub fn get_extracted_files(directory: &str) -> Vec<String> {
     let mut regular_files: Vec<String> = vec![];
 
     for entry in WalkDir::new(directory).into_iter() {
@@ -733,13 +878,13 @@ pub fn get_extracted_files(directory: &String) -> Vec<String> {
         }
     }
 
-    return regular_files;
+    regular_files
 }
 
 /// Executes an extractor for the provided SignatureResult.
 pub fn execute(
-    file_data: &Vec<u8>,
-    file_path: &String,
+    file_data: &[u8],
+    file_path: &str,
     signature: &SignatureResult,
     extractor: &Option<Extractor>,
 ) -> ExtractionResult {
@@ -771,7 +916,10 @@ pub fn execute(
                 // Decide how to execute the extractor depending on the extractor type
                 match &extractor_definition.utility {
                     ExtractorType::None => {
-                        panic!("An extractor of type None is invalid!");
+                        error!(
+                            "Signature {}: an extractor of type None is invalid!",
+                            signature.name
+                        );
                     }
 
                     ExtractorType::Internal(func) => {
@@ -820,17 +968,15 @@ pub fn execute(
                 result.do_not_recurse = extractor_definition.do_not_recurse;
 
                 // If the extractor reported success, make sure it extracted something other than just an empty file
-                if result.success == true {
-                    if was_something_extracted(&result.output_directory) == false {
-                        result.success = false;
-                        warn!("Extractor exited successfully, but no data was extracted");
-                    }
+                if result.success && !was_something_extracted(&result.output_directory) {
+                    result.success = false;
+                    warn!("Extractor exited successfully, but no data was extracted");
                 }
             }
         }
 
         // Clean up extractor's output directory if extraction failed
-        if result.success == false {
+        if !result.success {
             if let Err(e) = fs::remove_dir_all(&output_directory) {
                 warn!(
                     "Failed to clean up extraction directory {} after extraction failure: {}",
@@ -840,28 +986,37 @@ pub fn execute(
         }
     }
 
-    return result;
+    result
 }
 
 /// Spawn an external extractor process.
 fn spawn(
-    file_data: &Vec<u8>,
-    file_path: &String,
-    output_directory: &String,
+    file_data: &[u8],
+    file_path: &str,
+    output_directory: &str,
     signature: &SignatureResult,
     mut extractor: Extractor,
 ) -> Result<ProcInfo, std::io::Error> {
-    let command: String;
     let chroot = Chroot::new(None);
 
     // This function *only* handles execution of external extraction utilities; internal extractors must be invoked directly
-    match &extractor.utility {
-        ExtractorType::External(cmd) => command = cmd.clone(),
+    let command = match &extractor.utility {
+        ExtractorType::External(cmd) => cmd.clone(),
         ExtractorType::Internal(_ext) => {
-            panic!("Tried to run an internal extractor as an external command!")
+            error!("Tried to run an internal extractor as an external command!");
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "attempt to execute an internal extractor as an external command",
+            ));
         }
-        ExtractorType::None => panic!("An extractor command was defined, but is set to None!"),
-    }
+        ExtractorType::None => {
+            error!("An extractor command was defined, but is set to None!");
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "invalid external command of type None",
+            ));
+        }
+    };
 
     // Carved file path will be <output directory>/<signature.name>_<hex offset>.<extractor.extension>
     let carved_file = format!(
@@ -882,7 +1037,7 @@ fn spawn(
 
     // If the entirety of the source file is this one file type, no need to carve a copy of it, just create a symlink
     if signature.offset == 0 && signature.size == file_data.len() {
-        if chroot.create_symlink(&carved_file, file_path) == false {
+        if !chroot.create_symlink(&carved_file, file_path) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "Failed to create carved file symlink",
@@ -890,7 +1045,7 @@ fn spawn(
         }
     } else {
         // Copy file data to carved file path
-        if chroot.carve_file(&carved_file, file_data, signature.offset, signature.size) == false {
+        if !chroot.carve_file(&carved_file, file_data, signature.offset, signature.size) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "Failed to carve data to disk",
@@ -910,7 +1065,7 @@ fn spawn(
         .args(&extractor.arguments)
         .stdout(process::Stdio::null())
         .stderr(process::Stdio::null())
-        .current_dir(&output_directory)
+        .current_dir(output_directory)
         .spawn()
     {
         Err(e) => {
@@ -918,18 +1073,18 @@ fn spawn(
                 "Failed to execute command {}{:?}: {}",
                 command, extractor.arguments, e
             );
-            return Err(e);
+            Err(e)
         }
 
         Ok(child) => {
             // If the process was spawned successfully, return some information about the process
             let proc_info = ProcInfo {
-                child: child,
+                child,
                 carved_file: carved_file.clone(),
                 exit_codes: extractor.exit_codes,
             };
 
-            return Ok(proc_info);
+            Ok(proc_info)
         }
     }
 }
@@ -945,7 +1100,7 @@ fn proc_wait(mut worker_info: ProcInfo) -> Result<ExtractionResult, ExtractionEr
         // Child was terminated from an external signal, status unknown, assume failure but do nothing else
         Err(e) => {
             error!("Failed to retreive child process status: {}", e);
-            return Err(ExtractionError);
+            Err(ExtractionError)
         }
 
         // Child terminated with an exit status
@@ -979,16 +1134,16 @@ fn proc_wait(mut worker_info: ProcInfo) -> Result<ExtractionResult, ExtractionEr
             }
 
             // Return an ExtractionResult with the appropriate success status
-            return Ok(ExtractionResult {
+            Ok(ExtractionResult {
                 success: extraction_success,
                 ..Default::default()
-            });
+            })
         }
     }
 }
 
 // Create an output directory in which to place extraction results
-fn create_output_directory(file_path: &String, offset: usize) -> Result<String, std::io::Error> {
+fn create_output_directory(file_path: &str, offset: usize) -> Result<String, std::io::Error> {
     let chroot = Chroot::new(None);
 
     // Output directory will be: <file_path.extracted/<hex offset>
@@ -1000,19 +1155,19 @@ fn create_output_directory(file_path: &String, offset: usize) -> Result<String, 
     );
 
     // Create the output directory, equivalent of mkdir -p
-    if chroot.create_directory(&output_directory) == false {
+    if !chroot.create_directory(&output_directory) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::Other,
             "Directory creation failed",
         ));
     }
 
-    return Ok(output_directory);
+    Ok(output_directory)
 }
 
 /// Returns true if the size of the provided extractor output directory is greater than zero.
 /// Note that any intermediate/carved files must be deleted *before* calling this function.
-fn was_something_extracted(output_directory: &String) -> bool {
+fn was_something_extracted(output_directory: &str) -> bool {
     let output_directory_path = path::Path::new(output_directory);
     debug!("Checking output directory {} for results", output_directory);
 
@@ -1043,5 +1198,5 @@ fn was_something_extracted(output_directory: &String) -> bool {
         }
     }
 
-    return false;
+    false
 }

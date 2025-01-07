@@ -1,20 +1,58 @@
 //! Common Functions
 use chrono::prelude::DateTime;
-use crc32_v2;
 use log::{debug, error};
 use std::fs::File;
 use std::io::Read;
 
-/// Read a file into memory and return its contents.
+/// Read a data into memory, either from disk or from stdin, and return its contents.
 ///
 /// ## Example
 ///
 /// ```
+/// # fn main() { #[allow(non_snake_case)] fn _doctest_main_src_common_rs_11_0() -> Result<(), Box<dyn std::error::Error>> {
+/// use binwalk::common::read_input;
+///
+/// let file_data = read_input("/etc/passwd", false)?;
+/// assert!(file_data.len() > 0);
+/// # Ok(())
+/// # } _doctest_main_src_common_rs_11_0(); }
+/// ```
+pub fn read_input(file: impl Into<String>, stdin: bool) -> Result<Vec<u8>, std::io::Error> {
+    if stdin {
+        read_stdin()
+    } else {
+        read_file(file)
+    }
+}
+
+/// Read data from standard input and return its contents.
+pub fn read_stdin() -> Result<Vec<u8>, std::io::Error> {
+    let mut stdin_data = Vec::new();
+
+    match std::io::stdin().read_to_end(&mut stdin_data) {
+        Err(e) => {
+            error!("Failed to read data from stdin: {}", e);
+            Err(e)
+        }
+        Ok(nbytes) => {
+            debug!("Loaded {} bytes from stdin", nbytes);
+            Ok(stdin_data)
+        }
+    }
+}
+
+/// Read a file data into memory and return its contents.
+///
+/// ## Example
+///
+/// ```
+/// # fn main() { #[allow(non_snake_case)] fn _doctest_main_src_common_rs_48_0() -> Result<(), Box<dyn std::error::Error>> {
 /// use binwalk::common::read_file;
 ///
-/// let file_data = read_file("/etc/passwd").unwrap();
-///
+/// let file_data = read_file("/etc/passwd")?;
 /// assert!(file_data.len() > 0);
+/// # Ok(())
+/// # } _doctest_main_src_common_rs_48_0(); }
 /// ```
 pub fn read_file(file: impl Into<String>) -> Result<Vec<u8>, std::io::Error> {
     let mut file_data = Vec::new();
@@ -23,16 +61,16 @@ pub fn read_file(file: impl Into<String>) -> Result<Vec<u8>, std::io::Error> {
     match File::open(&file_path) {
         Err(e) => {
             error!("Failed to open file {}: {}", file_path, e);
-            return Err(e);
+            Err(e)
         }
         Ok(mut fp) => match fp.read_to_end(&mut file_data) {
             Err(e) => {
                 error!("Failed to read file {} into memory: {}", file_path, e);
-                return Err(e);
+                Err(e)
             }
             Ok(file_size) => {
                 debug!("Loaded {} bytes from {}", file_size, file_path);
-                return Ok(file_data);
+                Ok(file_data)
             }
         },
     }
@@ -56,7 +94,7 @@ pub fn read_file(file: impl Into<String>) -> Result<Vec<u8>, std::io::Error> {
 /// assert_eq!(my_data_crc, 0xDB1720A5);
 /// ```
 pub fn crc32(data: &[u8]) -> u32 {
-    return crc32_v2::crc32(0, data);
+    crc32_v2::crc32(0, data)
 }
 
 /// Converts an epoch time to a formatted time string.
@@ -73,8 +111,8 @@ pub fn crc32(data: &[u8]) -> u32 {
 pub fn epoch_to_string(epoch_timestamp: u32) -> String {
     let date_time = DateTime::from_timestamp(epoch_timestamp.into(), 0);
     match date_time {
-        Some(dt) => return dt.format("%Y-%m-%d %H:%M:%S").to_string(),
-        None => return "".to_string(),
+        Some(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+        None => "".to_string(),
     }
 }
 
@@ -91,7 +129,7 @@ fn get_cstring_bytes(raw_data: &[u8]) -> Vec<u8> {
         }
     }
 
-    return cstring;
+    cstring
 }
 
 /// Get a C-style NULL-terminated string from the provided array of u8 bytes.
@@ -108,16 +146,48 @@ fn get_cstring_bytes(raw_data: &[u8]) -> Vec<u8> {
 /// assert_eq!(string, "this_is_a_c_string");
 /// ```
 pub fn get_cstring(raw_data: &[u8]) -> String {
-    let string: String;
-
     let raw_string = get_cstring_bytes(raw_data);
 
-    match String::from_utf8(raw_string) {
-        Err(_) => string = "".to_string(),
-        Ok(s) => string = s.clone(),
-    }
+    let string: String = match String::from_utf8(raw_string) {
+        Err(_) => "".to_string(),
+        Ok(s) => s.clone(),
+    };
 
-    return string;
+    string
+}
+
+/// Returns true if the provided byte is an ASCII number
+///
+/// ## Example
+///
+/// ```
+/// use binwalk::common::is_ascii_number;
+///
+/// assert!(is_ascii_number(0x31));
+/// assert!(!is_ascii_number(0xFE));
+/// ```
+pub fn is_ascii_number(b: u8) -> bool {
+    const ZERO: u8 = 48;
+    const NINE: u8 = 57;
+
+    (ZERO..=NINE).contains(&b)
+}
+
+/// Returns true if the provided byte is a printable ASCII character
+///
+/// ## Example
+///
+/// ```
+/// use binwalk::common::is_printable_ascii;
+///
+/// assert!(is_printable_ascii(0x41));
+/// assert!(!is_printable_ascii(0xFE));
+/// ```
+pub fn is_printable_ascii(b: u8) -> bool {
+    const ASCII_MIN: u8 = 0x0A;
+    const ASCII_MAX: u8 = 0x7E;
+
+    (ASCII_MIN..=ASCII_MAX).contains(&b)
 }
 
 /// Validates data offsets to prevent out-of-bounds access and infinite loops while parsing file formats.
@@ -158,5 +228,5 @@ pub fn is_offset_safe(
         return false;
     }
 
-    return true;
+    true
 }

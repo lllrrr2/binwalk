@@ -27,29 +27,43 @@ struct RomFSEntry {
 }
 
 /// Defines the internal extractor function for extracting RomFS file systems */
+///
+/// ```
+/// use std::io::ErrorKind;
+/// use std::process::Command;
+/// use binwalk::extractors::common::ExtractorType;
+/// use binwalk::extractors::romfs::romfs_extractor;
+///
+/// match romfs_extractor().utility {
+///     ExtractorType::None => panic!("Invalid extractor type of None"),
+///     ExtractorType::Internal(func) => println!("Internal extractor OK: {:?}", func),
+///     ExtractorType::External(cmd) => {
+///         if let Err(e) = Command::new(&cmd).output() {
+///             if e.kind() == ErrorKind::NotFound {
+///                 panic!("External extractor '{}' not found", cmd);
+///             } else {
+///                 panic!("Failed to execute external extractor '{}': {}", cmd, e);
+///             }
+///         }
+///     }
+/// }
+/// ```
 pub fn romfs_extractor() -> Extractor {
-    return Extractor {
+    Extractor {
         utility: ExtractorType::Internal(extract_romfs),
         ..Default::default()
-    };
+    }
 }
 
 /// Internal RomFS extractor
 pub fn extract_romfs(
-    file_data: &Vec<u8>,
+    file_data: &[u8],
     offset: usize,
-    output_directory: Option<&String>,
+    output_directory: Option<&str>,
 ) -> ExtractionResult {
-    let do_extraction: bool;
     let mut result = ExtractionResult {
         ..Default::default()
     };
-
-    // Only perform extraction if an output directory was provided
-    match output_directory {
-        None => do_extraction = false,
-        Some(_) => do_extraction = true,
-    }
 
     // Parse the RomFS header
     if let Ok(romfs_header) = parse_romfs_header(&file_data[offset..]) {
@@ -62,13 +76,13 @@ pub fn extract_romfs(
             // Process the RomFS file entries
             if let Ok(root_entries) = process_romfs_entries(romfs_data, romfs_header.header_size) {
                 // We expect at least one file entry in the root of the RomFS image
-                if root_entries.len() > 0 {
+                if !root_entries.is_empty() {
                     // Everything looks good
                     result.success = true;
                     result.size = Some(romfs_header.image_size);
 
                     // Do extraction, if an output directory was provided
-                    if do_extraction {
+                    if output_directory.is_some() {
                         let mut file_count: usize = 0;
                         let root_parent = "".to_string();
 
@@ -78,7 +92,7 @@ pub fn extract_romfs(
                         let romfs_chroot_dir = chroot.chrooted_path(&romfs_header.volume_name);
 
                         // Create the romfs output directory, ensuring that it is contained inside the specified extraction directory
-                        if chroot.create_directory(&romfs_chroot_dir) == true {
+                        if chroot.create_directory(&romfs_chroot_dir) {
                             // Extract RomFS contents
                             file_count = extract_romfs_entries(
                                 romfs_data,
@@ -98,7 +112,7 @@ pub fn extract_romfs(
         }
     }
 
-    return result;
+    result
 }
 
 // Recursively processes all RomFS file entries and their children, and returns a list of RomFSEntry structures
@@ -123,7 +137,7 @@ fn process_romfs_entries(
      */
     while file_offset != 0 && is_offset_safe(available_data, file_offset, previous_file_offset) {
         // Sanity check, no two entries should exist at the same offset, if so, infinite recursion could ensue
-        if processed_entries.contains(&file_offset) == true {
+        if processed_entries.contains(&file_offset) {
             break;
         } else {
             processed_entries.push(file_offset);
@@ -160,9 +174,9 @@ fn process_romfs_entries(
             }
 
             // Don't do anything special for '.' or '..' directory entries
-            if ignore_file_names.contains(&file_entry.name) == false {
+            if !ignore_file_names.contains(&file_entry.name) {
                 // Symlinks need their target paths
-                if file_entry.symlink == true {
+                if file_entry.symlink {
                     if let Some(symlink_bytes) =
                         romfs_data.get(file_entry.offset..file_entry.offset + file_entry.size)
                     {
@@ -185,8 +199,8 @@ fn process_romfs_entries(
                 }
 
                 // Directories have children; process them
-                if file_entry.directory == true {
-                    match process_romfs_entries(&romfs_data, file_entry.info) {
+                if file_entry.directory {
+                    match process_romfs_entries(romfs_data, file_entry.info) {
                         Err(e) => return Err(e),
                         Ok(children) => file_entry.children = children,
                     }
@@ -207,15 +221,15 @@ fn process_romfs_entries(
         }
     }
 
-    return Ok(file_entries);
+    Ok(file_entries)
 }
 
 // Recursively extract all RomFS entries, returns the number of extracted files/directories
 fn extract_romfs_entries(
     romfs_data: &[u8],
     romfs_files: &Vec<RomFSEntry>,
-    parent_directory: &String,
-    chroot_directory: &String,
+    parent_directory: &str,
+    chroot_directory: &str,
 ) -> usize {
     let mut file_count: usize = 0;
 
@@ -252,11 +266,11 @@ fn extract_romfs_entries(
             continue;
         }
 
-        if extraction_success == true {
+        if extraction_success {
             file_count += 1;
 
             // Extract the children of a directory
-            if file_entry.directory == true && file_entry.children.len() > 0 {
+            if file_entry.directory && !file_entry.children.is_empty() {
                 file_count += extract_romfs_entries(
                     romfs_data,
                     &file_entry.children,
@@ -266,7 +280,7 @@ fn extract_romfs_entries(
             }
 
             // Make executable files executable
-            if file_entry.regular == true && file_entry.executable == true {
+            if file_entry.regular && file_entry.executable {
                 chroot.make_executable(&file_path);
             }
         } else {
@@ -275,5 +289,5 @@ fn extract_romfs_entries(
     }
 
     // Return the number of files extracted
-    return file_count;
+    file_count
 }

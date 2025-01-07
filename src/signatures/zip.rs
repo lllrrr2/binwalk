@@ -7,42 +7,46 @@ pub const DESCRIPTION: &str = "ZIP archive";
 
 /// ZIP file entry magic bytes
 pub fn zip_magic() -> Vec<Vec<u8>> {
-    return vec![b"PK\x03\x04".to_vec()];
+    vec![b"PK\x03\x04".to_vec()]
 }
 
 /// Validates a ZIP file entry signature
-pub fn zip_parser(file_data: &Vec<u8>, offset: usize) -> Result<SignatureResult, SignatureError> {
+pub fn zip_parser(file_data: &[u8], offset: usize) -> Result<SignatureResult, SignatureError> {
     // Success return value
     let mut result = SignatureResult {
-        offset: offset,
+        offset,
         description: DESCRIPTION.to_string(),
         confidence: CONFIDENCE_HIGH,
         ..Default::default()
     };
 
     // Parse the ZIP file header
-    if let Ok(_) = parse_zip_header(&file_data[offset..]) {
+    if let Ok(zip_file_header) = parse_zip_header(&file_data[offset..]) {
         // Locate the end-of-central-directory header, which must come after the zip local file entries
-        if let Ok(zip_info) = find_zip_eof(&file_data, offset) {
+        if let Ok(zip_info) = find_zip_eof(file_data, offset) {
             result.size = zip_info.eof - offset;
             result.description = format!(
-                "{}, file count: {}, total size: {} bytes",
-                result.description, zip_info.file_count, result.size
+                "{}, version: {}.{}, file count: {}, total size: {} bytes",
+                result.description,
+                zip_file_header.version_major,
+                zip_file_header.version_minor,
+                zip_info.file_count,
+                result.size
             );
             return Ok(result);
         }
     }
 
-    return Err(SignatureError);
+    Err(SignatureError)
 }
 
-struct ZipEOCDInfo {
-    eof: usize,
-    file_count: usize,
+pub struct ZipEOCDInfo {
+    pub eof: usize,
+    pub file_count: usize,
 }
 
 /// Need to grep the rest of the file data to locate the end-of-central-directory header, which tells us where the ZIP file ends.
-fn find_zip_eof(file_data: &Vec<u8>, offset: usize) -> Result<ZipEOCDInfo, SignatureError> {
+pub fn find_zip_eof(file_data: &[u8], offset: usize) -> Result<ZipEOCDInfo, SignatureError> {
     // This magic string assumes that the disk_number and central_directory_disk_number are 0
     const ZIP_EOCD_MAGIC: &[u8; 8] = b"PK\x05\x06\x00\x00\x00\x00";
 
@@ -66,5 +70,5 @@ fn find_zip_eof(file_data: &Vec<u8>, offset: usize) -> Result<ZipEOCDInfo, Signa
     }
 
     // No valid EOCD record found :(
-    return Err(SignatureError);
+    Err(SignatureError)
 }
