@@ -34,6 +34,7 @@ pub fn parse_mbr_image(mbr_data: &[u8]) -> Result<MBRHeader, StructureError> {
     ];
 
     let known_os_types = HashMap::from([
+        (0x07, "NTFS_IFS_HPFS_exFAT"),
         (0x0B, "FAT32"),
         (0x0C, "FAT32"),
         (0x43, "Linux"),
@@ -122,7 +123,7 @@ pub fn parse_mbr_image(mbr_data: &[u8]) -> Result<MBRHeader, StructureError> {
         }
 
         // There should be at least one valid partition
-        if mbr_header.partitions.len() > 0 {
+        if !mbr_header.partitions.is_empty() {
             // Total size should be greater than minimum size
             if mbr_header.image_size > MIN_IMAGE_SIZE {
                 return Ok(mbr_header);
@@ -130,5 +131,5 @@ pub fn parse_mbr_image(mbr_data: &[u8]) -> Result<MBRHeader, StructureError> {
         }
     }
 
-    return Err(StructureError);
+    Err(StructureError)
 }

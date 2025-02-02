@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -7,7 +7,11 @@ pub struct CliArgs {
     #[arg(short = 'L', long)]
     pub list: bool,
 
-    /// Supress output to stdout
+    /// Read data from standard input
+    #[arg(short, long)]
+    pub stdin: bool,
+
+    /// Supress normal stdout output
     #[arg(short, long)]
     pub quiet: bool,
 
@@ -19,15 +23,27 @@ pub struct CliArgs {
     #[arg(short, long)]
     pub extract: bool,
 
+    /// Carve both known and unknown file contents to disk
+    #[arg(short, long)]
+    pub carve: bool,
+
     /// Recursively scan extracted files
     #[arg(short = 'M', long)]
     pub matryoshka: bool,
 
-    /// Plot the entropy of the specified file
+    /// Search for all signatures at all offsets
+    #[arg(short = 'a', long)]
+    pub search_all: bool,
+
+    /// Generate a PNG entropy graph
     #[arg(short = 'E', long, conflicts_with = "extract")]
     pub entropy: bool,
 
-    /// Log JSON results to a file
+    /// Specify an alternate file name for the PNG entropy graph
+    #[arg(short, long, requires = "entropy")]
+    pub png: Option<String>,
+
+    /// Log JSON results to a file ('-' for stdout)
     #[arg(short, long)]
     pub log: Option<String>,
 
@@ -44,7 +60,7 @@ pub struct CliArgs {
     pub include: Option<Vec<String>>,
 
     /// Extract files/folders to a custom directory
-    #[arg(short = 'C', long, default_value = "extractions")]
+    #[arg(short, long, default_value = "extractions")]
     pub directory: String,
 
     /// Path to the file to analyze
@@ -52,5 +68,14 @@ pub struct CliArgs {
 }
 
 pub fn parse() -> CliArgs {
-    return CliArgs::parse();
+    let args = CliArgs::parse();
+
+    if std::env::args().len() == 1 {
+        CliArgs::command()
+            .print_help()
+            .expect("Failed to print help output");
+        std::process::exit(1);
+    }
+
+    args
 }

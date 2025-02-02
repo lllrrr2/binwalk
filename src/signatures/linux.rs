@@ -2,32 +2,70 @@ use crate::common::get_cstring;
 use crate::signatures::common::{
     SignatureError, SignatureResult, CONFIDENCE_LOW, CONFIDENCE_MEDIUM,
 };
-use crate::structures::linux::parse_linux_arm64_boot_image_header;
+use crate::structures::linux::{
+    parse_linux_arm64_boot_image_header, parse_linux_arm_zimage_header,
+};
 use aho_corasick::AhoCorasick;
 
 /// Human readable descriptions
+pub const LINUX_ARM_ZIMAGE_DESCRIPTION: &str = "Linux ARM boot executable zImage";
 pub const LINUX_BOOT_IMAGE_DESCRIPTION: &str = "Linux kernel boot image";
 pub const LINUX_KERNEL_VERSION_DESCRIPTION: &str = "Linux kernel version";
 pub const LINUX_ARM64_BOOT_IMAGE_DESCRIPTION: &str = "Linux kernel ARM64 boot image";
 
 /// Magic bytes for a linux boot image
 pub fn linux_boot_image_magic() -> Vec<Vec<u8>> {
-    return vec![b"\xb8\xc0\x07\x8e\xd8\xb8\x00\x90\x8e\xc0\xb9\x00\x01\x29\xf6\x29".to_vec()];
+    vec![b"\xb8\xc0\x07\x8e\xd8\xb8\x00\x90\x8e\xc0\xb9\x00\x01\x29\xf6\x29".to_vec()]
 }
 
 /// Kernel version string magic
 pub fn linux_kernel_version_magic() -> Vec<Vec<u8>> {
-    return vec![b"Linux\x20version\x20".to_vec()];
+    vec![b"Linux\x20version\x20".to_vec()]
 }
 
 /// Magic bytes for a linux ARM64 boot image
 pub fn linux_arm64_boot_image_magic() -> Vec<Vec<u8>> {
-    return vec![b"\x00\x00\x00\x00\x00\x00\x00\x00ARMd".to_vec()];
+    vec![b"\x00\x00\x00\x00\x00\x00\x00\x00ARMd".to_vec()]
+}
+
+/// Magic bytes for Linux ARM zImage
+pub fn linux_arm_zimage_magic() -> Vec<Vec<u8>> {
+    vec![b"\x18\x28\x6F\x01".to_vec(), b"\x01\x6F\x28\x18".to_vec()]
+}
+
+/// Validate a Linux ARM zImage
+pub fn linux_arm_zimage_parser(
+    file_data: &[u8],
+    offset: usize,
+) -> Result<SignatureResult, SignatureError> {
+    const MAGIC_OFFSET: usize = 36;
+
+    let mut result = SignatureResult {
+        confidence: CONFIDENCE_MEDIUM,
+        description: LINUX_ARM_ZIMAGE_DESCRIPTION.to_string(),
+        ..Default::default()
+    };
+
+    if offset >= MAGIC_OFFSET {
+        result.offset = offset - MAGIC_OFFSET;
+
+        if let Some(zimage_data) = file_data.get(result.offset..) {
+            if let Ok(zimage_header) = parse_linux_arm_zimage_header(zimage_data) {
+                result.description = format!(
+                    "{}, {} endian",
+                    result.description, zimage_header.endianness
+                );
+                return Ok(result);
+            }
+        }
+    }
+
+    Err(SignatureError)
 }
 
 /// Validate a linux ARM64 boot image signature
 pub fn linux_arm64_boot_image_parser(
-    file_data: &Vec<u8>,
+    file_data: &[u8],
     offset: usize,
 ) -> Result<SignatureResult, SignatureError> {
     // Magic bytes are 56 bytes into the image
@@ -54,12 +92,12 @@ pub fn linux_arm64_boot_image_parser(
         }
     }
 
-    return Err(SignatureError);
+    Err(SignatureError)
 }
 
 /// Validate a linux boot image signature
 pub fn linux_boot_image_parser(
-    file_data: &Vec<u8>,
+    file_data: &[u8],
     offset: usize,
 ) -> Result<SignatureResult, SignatureError> {
     // There should be the string "!HdrS" 514 bytes from the start of the magic signature
@@ -68,7 +106,7 @@ pub fn linux_boot_image_parser(
 
     let result = SignatureResult {
         description: LINUX_BOOT_IMAGE_DESCRIPTION.to_string(),
-        offset: offset,
+        offset,
         size: 0,
         ..Default::default()
     };
@@ -87,12 +125,12 @@ pub fn linux_boot_image_parser(
         }
     }
 
-    return Err(SignatureError);
+    Err(SignatureError)
 }
 
 /// Validate a linux kernel version signature and detect if a symbol table is present
 pub fn linux_kernel_version_parser(
-    file_data: &Vec<u8>,
+    file_data: &[u8],
     offset: usize,
 ) -> Result<SignatureResult, SignatureError> {
     // Kernel version string format is expected to be something like:
@@ -102,12 +140,13 @@ pub fn linux_kernel_version_parser(
     const AMPERSAND: &str = "@";
     const PERIOD_OFFSET_1: usize = 15;
     const PERIOD_OFFSET_2: usize = 17;
+    const PERIOD_OFFSET_3: usize = 18;
     const MIN_FILE_SIZE: usize = 100 * 1024;
     const MIN_VERSION_STRING_LENGTH: usize = 75;
     const GCC_VERSION_STRING: &str = "gcc ";
 
     let mut result = SignatureResult {
-        offset: offset,
+        offset,
         confidence: CONFIDENCE_LOW,
         ..Default::default()
     };
@@ -127,9 +166,12 @@ pub fn linux_kernel_version_parser(
                 if kernel_version_string.contains(AMPERSAND) {
                     // The kernel version string should end with a new line
                     if kernel_version_string.ends_with(NEW_LINE) {
+                        let kv_bytes = kernel_version_string.as_bytes();
+
                         // Make sure the linux kernel version has periods at the expected locations
-                        if kernel_version_string.as_bytes()[PERIOD_OFFSET_1] == PERIOD
-                            && kernel_version_string.as_bytes()[PERIOD_OFFSET_2] == PERIOD
+                        if kv_bytes[PERIOD_OFFSET_1] == PERIOD
+                            && (kv_bytes[PERIOD_OFFSET_2] == PERIOD
+                                || kv_bytes[PERIOD_OFFSET_3] == PERIOD)
                         {
                             // Try to locate a Linux kernel symbol table
                             let symtab_present = has_linux_symbol_table(file_data);
@@ -159,7 +201,7 @@ pub fn linux_kernel_version_parser(
         }
     }
 
-    return Err(SignatureError);
+    Err(SignatureError)
 }
 
 /// Searches the file data for a linux symbol table
@@ -177,5 +219,5 @@ fn has_linux_symbol_table(file_data: &[u8]) -> bool {
     }
 
     // There should be only one match
-    return match_count == 1;
+    match_count == 1
 }

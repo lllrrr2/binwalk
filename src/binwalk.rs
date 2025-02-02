@@ -19,8 +19,19 @@ use crate::extractors;
 use crate::magic;
 use crate::signatures;
 
+/// Returned on initialization error
 #[derive(Debug, Default, Clone)]
-pub struct BinwalkError;
+pub struct BinwalkError {
+    pub message: String,
+}
+
+impl BinwalkError {
+    pub fn new(message: &str) -> Self {
+        BinwalkError {
+            message: message.to_string(),
+        }
+    }
+}
 
 /// Analysis results returned by Binwalk::analyze
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -56,6 +67,8 @@ pub struct AnalysisResults {
 pub struct Binwalk {
     /// Count of all signatures (short and regular)
     pub signature_count: usize,
+    /// Count of all magic patterns (short and regular)
+    pub pattern_count: usize,
     /// The base file requested for analysis
     pub base_target_file: String,
     /// The base output directory for extracted files
@@ -72,7 +85,7 @@ pub struct Binwalk {
 
 impl Binwalk {
     /// Create a new Binwalk instance with all default values.
-    /// Equivalent to `Binwalk::configure(None, None, None, None, None)`.
+    /// Equivalent to `Binwalk::configure(None, None, None, None, None, false)`.
     ///
     /// ## Example
     ///
@@ -83,7 +96,7 @@ impl Binwalk {
     /// ```
     #[allow(dead_code)]
     pub fn new() -> Binwalk {
-        return Binwalk::configure(None, None, None, None, None).unwrap();
+        Binwalk::configure(None, None, None, None, None, false).unwrap()
     }
 
     /// Create a new Binwalk instance.
@@ -100,12 +113,20 @@ impl Binwalk {
     /// ## Example
     ///
     /// ```
+    /// # fn main() { #[allow(non_snake_case)] fn _doctest_main_src_binwalk_rs_102_0() -> Result<binwalk::Binwalk, binwalk::BinwalkError> {
     /// use binwalk::Binwalk;
     ///
     /// // Don't scan for these file signatures
     /// let exclude_filters: Vec<String> = vec!["jpeg".to_string(), "png".to_string()];
     ///
-    /// let binwalker = Binwalk::configure(None, None, None, Some(exclude_filters), None).unwrap();
+    /// let binwalker = Binwalk::configure(None,
+    ///                                    None,
+    ///                                    None,
+    ///                                    Some(exclude_filters),
+    ///                                    None,
+    ///                                    false)?;
+    /// # Ok(binwalker)
+    /// # } _doctest_main_src_binwalk_rs_102_0(); }
     /// ```
     pub fn configure(
         target_file_name: Option<String>,
@@ -113,6 +134,7 @@ impl Binwalk {
         include: Option<Vec<String>>,
         exclude: Option<Vec<String>>,
         signatures: Option<Vec<signatures::common::Signature>>,
+        full_search: bool,
     ) -> Result<Binwalk, BinwalkError> {
         let mut new_instance = Binwalk {
             ..Default::default()
@@ -123,7 +145,10 @@ impl Binwalk {
             // Set the target file path, make it an absolute path
             match path::absolute(&target_file) {
                 Err(_) => {
-                    return Err(BinwalkError);
+                    return Err(BinwalkError::new(&format!(
+                        "Failed to get absolute path for '{}'",
+                        target_file
+                    )));
                 }
                 Ok(abspath) => {
                     new_instance.base_target_file = abspath.display().to_string();
@@ -135,7 +160,10 @@ impl Binwalk {
                 // Make the extraction directory an absolute path
                 match path::absolute(&extraction_directory) {
                     Err(_) => {
-                        return Err(BinwalkError);
+                        return Err(BinwalkError::new(&format!(
+                            "Failed to get absolute path for '{}'",
+                            extraction_directory
+                        )));
                     }
                     Ok(abspath) => {
                         new_instance.base_output_directory = abspath.display().to_string();
@@ -149,8 +177,11 @@ impl Binwalk {
                     &new_instance.base_target_file,
                     &new_instance.base_output_directory,
                 ) {
-                    Err(_) => {
-                        return Err(BinwalkError);
+                    Err(e) => {
+                        return Err(BinwalkError::new(&format!(
+                            "Failed to initialize extraction directory: {}",
+                            e
+                        )));
                     }
                     Ok(new_target_file_path) => {
                         // This is the new base target path (a symlink inside the extraction directory)
@@ -171,12 +202,15 @@ impl Binwalk {
         // Load magic signatures
         for signature in signature_patterns.clone() {
             // Check if this signature should be included
-            if include_signature(&signature, &include, &exclude) == false {
+            if !include_signature(&signature, &include, &exclude) {
                 continue;
             }
 
             // Keep a count of total unique signatures that are supported
             new_instance.signature_count += 1;
+
+            // Keep a count of the total number of magic patterns
+            new_instance.pattern_count += signature.magic.len();
 
             // Create a lookup table which associates each signature to its respective extractor
             new_instance
@@ -185,9 +219,10 @@ impl Binwalk {
 
             // Each signature may have multiple magic bytes associated with it
             for pattern in signature.magic.clone() {
-                if signature.short == true {
+                if signature.short && !full_search {
                     // These are short patterns, and should only be searched for at the very beginning of a file
                     new_instance.short_signatures.push(signature.clone());
+                    break;
                 } else {
                     /*
                      * Need to keep a mapping of the pattern index and its associated signature
@@ -204,7 +239,7 @@ impl Binwalk {
             }
         }
 
-        return Ok(new_instance);
+        Ok(new_instance)
     }
 
     /// Scan a file for magic signatures.
@@ -228,7 +263,7 @@ impl Binwalk {
     ///
     /// assert!(signature_results.len() > 0);
     /// ```
-    pub fn scan(&self, file_data: &Vec<u8>) -> Vec<signatures::common::SignatureResult> {
+    pub fn scan(&self, file_data: &[u8]) -> Vec<signatures::common::SignatureResult> {
         const FILE_START_OFFSET: usize = 0;
 
         let mut index_adjustment: usize = 0;
@@ -252,40 +287,35 @@ impl Binwalk {
                 let magic_start = FILE_START_OFFSET + signature.magic_offset;
                 let magic_end = magic_start + magic.len();
 
-                if file_data.len() > magic_end {
-                    if file_data[magic_start..magic_end] == magic {
-                        debug!(
-                            "Found {} short magic match at offset {:#X}",
-                            signature.description, magic_start
+                if file_data.len() > magic_end && file_data[magic_start..magic_end] == magic {
+                    debug!(
+                        "Found {} short magic match at offset {:#X}",
+                        signature.description, magic_start
+                    );
+
+                    if let Ok(mut signature_result) = (signature.parser)(file_data, magic_start) {
+                        // Auto populate some signature result fields
+                        signature_result_auto_populate(&mut signature_result, signature);
+
+                        // Add this signature to the file map
+                        file_map.push(signature_result.clone());
+                        info!(
+                            "Found valid {} short signature at offset {:#X}",
+                            signature_result.name, FILE_START_OFFSET
                         );
 
-                        if let Ok(mut signature_result) =
-                            (signature.parser)(&file_data, magic_start)
-                        {
-                            // Auto populate some signature result fields
-                            signature_result_auto_populate(&mut signature_result, &signature);
-
-                            // Add this signature to the file map
-                            file_map.push(signature_result.clone());
-                            info!(
-                                "Found valid {} short signature at offset {:#X}",
-                                signature_result.name, FILE_START_OFFSET
-                            );
-
-                            // Only update the next_valid_offset if confidence is at least medium
-                            if signature_result.confidence >= signatures::common::CONFIDENCE_MEDIUM
-                            {
-                                next_valid_offset = signature_result.offset + signature_result.size;
-                            }
-
-                            // Only one signature can match at fixed offset 0
-                            break;
-                        } else {
-                            debug!(
-                                "{} short signature match at offset {:#X} is invalid",
-                                signature.description, FILE_START_OFFSET
-                            );
+                        // Only update the next_valid_offset if confidence is high; these are, after all, short signatures
+                        if signature_result.confidence >= signatures::common::CONFIDENCE_HIGH {
+                            next_valid_offset = signature_result.offset + signature_result.size;
                         }
+
+                        // Only one signature can match at fixed offset 0
+                        break;
+                    } else {
+                        debug!(
+                            "{} short signature match at offset {:#X} is invalid",
+                            signature.description, FILE_START_OFFSET
+                        );
                     }
                 }
             }
@@ -343,7 +373,7 @@ impl Binwalk {
                  * Invoke the signature parser to parse and validate the signature.
                  * An error indicates a false positive match for the signature type.
                  */
-                if let Ok(mut signature_result) = (signature.parser)(&file_data, magic_offset) {
+                if let Ok(mut signature_result) = (signature.parser)(file_data, magic_offset) {
                     // Calculate the end of this signature's data
                     let signature_end_offset = signature_result.offset + signature_result.size;
 
@@ -406,7 +436,7 @@ impl Binwalk {
             i -= index_adjustment;
 
             // Make sure the file map index is valid
-            if file_map.len() == 0 || i >= file_map.len() {
+            if file_map.is_empty() || i >= file_map.len() {
                 break;
             }
 
@@ -498,10 +528,10 @@ impl Binwalk {
                 // If there are more entries in the file map
                 if next_index < file_map.len() {
                     // Look through all remaining file map entries for one with medium to high confidence
-                    for j in next_index..file_map.len() {
-                        if file_map[j].confidence >= signatures::common::CONFIDENCE_MEDIUM {
+                    for file_map_entry in file_map.iter().skip(next_index) {
+                        if file_map_entry.confidence >= signatures::common::CONFIDENCE_MEDIUM {
                             // If a signature of at least medium confidence is found, assume that *this* signature ends there
-                            next_offset = file_map[j].offset;
+                            next_offset = file_map_entry.offset;
                             break;
                         }
                     }
@@ -522,7 +552,7 @@ impl Binwalk {
 
         debug!("Found {} valid signatures", file_map.len());
 
-        return file_map;
+        file_map
     }
 
     /// Extract all extractable signatures found in a file.
@@ -530,13 +560,27 @@ impl Binwalk {
     /// ## Example
     ///
     /// ```
+    /// # fn main() { #[allow(non_snake_case)] fn _doctest_main_src_binwalk_rs_529_0() -> Result<binwalk::Binwalk, binwalk::BinwalkError> {
     /// use binwalk::Binwalk;
     ///
-    /// # std::fs::remove_dir_all("/tmp/foobar");
-    /// let target_path = "/usr/share/man/man2/accept.2.gz".to_string();
-    /// let extraction_directory = "/tmp/foobar/extractions".to_string();
+    /// let target_path = std::path::Path::new("tests")
+    ///     .join("inputs")
+    ///     .join("gzip.bin")
+    ///     .display()
+    ///     .to_string();
     ///
-    /// let binwalker = Binwalk::configure(Some(target_path), Some(extraction_directory), None, None, None).unwrap();
+    /// let extraction_directory = std::path::Path::new("tests")
+    ///     .join("extractions")
+    ///     .display()
+    ///     .to_string();
+    ///
+    /// # std::fs::remove_dir_all(&extraction_directory);
+    /// let binwalker = Binwalk::configure(Some(target_path),
+    ///                                    Some(extraction_directory.clone()),
+    ///                                    None,
+    ///                                    None,
+    ///                                    None,
+    ///                                    false)?;
     ///
     /// let file_data = std::fs::read(&binwalker.base_target_file).expect("Unable to read file");
     ///
@@ -545,22 +589,29 @@ impl Binwalk {
     ///
     /// assert_eq!(scan_results.len(), 1);
     /// assert_eq!(extraction_results.len(),  1);
-    /// assert_eq!(std::path::Path::new("/tmp/foobar/extractions/accept.2.gz.extracted/0/decompressed.bin").exists(), true);
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// assert_eq!(std::path::Path::new(&extraction_directory)
+    ///     .join("gzip.bin.extracted")
+    ///     .join("0")
+    ///     .join("decompressed.bin")
+    ///     .exists(), true);
+    /// # std::fs::remove_dir_all(&extraction_directory);
+    /// # Ok(binwalker)
+    /// # } _doctest_main_src_binwalk_rs_529_0(); }
     /// ```
     pub fn extract(
         &self,
-        file_data: &Vec<u8>,
-        file_path: &String,
+        file_data: &[u8],
+        file_name: impl Into<String>,
         file_map: &Vec<signatures::common::SignatureResult>,
     ) -> HashMap<String, extractors::common::ExtractionResult> {
+        let file_path = file_name.into();
         let mut extraction_results: HashMap<String, extractors::common::ExtractionResult> =
             HashMap::new();
 
         // Spawn extractors for each extractable signature
         for signature in file_map {
             // Signatures may opt to not perform extraction; honor this request
-            if signature.extraction_declined == true {
+            if signature.extraction_declined {
                 continue;
             }
 
@@ -572,9 +623,9 @@ impl Binwalk {
                 Some(_) => {
                     // Run an extraction for this signature
                     let mut extraction_result =
-                        extractors::common::execute(file_data, file_path, signature, &extractor);
+                        extractors::common::execute(file_data, &file_path, signature, &extractor);
 
-                    if extraction_result.success == false {
+                    if !extraction_result.success {
                         debug!(
                             "Extraction failed for {} (ID: {}) {:#X} - {:#X}",
                             signature.name, signature.id, signature.offset, signature.size
@@ -603,7 +654,7 @@ impl Binwalk {
                             // Re-run the extraction
                             extraction_result = extractors::common::execute(
                                 file_data,
-                                file_path,
+                                &file_path,
                                 &new_signature,
                                 &extractor,
                             );
@@ -616,68 +667,147 @@ impl Binwalk {
             }
         }
 
-        return extraction_results;
+        extraction_results
     }
 
-    /// Analyze a file and optionally extract the file contents.
+    /// Analyze a data buffer and optionally extract the file contents.
     ///
     /// ## Example
     ///
     /// ```
+    /// # fn main() { #[allow(non_snake_case)] fn _doctest_main_src_binwalk_rs_672_0() -> Result<binwalk::Binwalk, binwalk::BinwalkError> {
+    /// use binwalk::{Binwalk, common};
+    ///
+    /// let target_path = std::path::Path::new("tests")
+    ///     .join("inputs")
+    ///     .join("gzip.bin")
+    ///     .display()
+    ///     .to_string();
+    ///
+    /// let extraction_directory = std::path::Path::new("tests")
+    ///     .join("extractions")
+    ///     .display()
+    ///     .to_string();
+    ///
+    /// let file_data = common::read_file(&target_path).expect("Failed to read file data");
+    ///
+    /// # std::fs::remove_dir_all(&extraction_directory);
+    /// let binwalker = Binwalk::configure(Some(target_path),
+    ///                                    Some(extraction_directory.clone()),
+    ///                                    None,
+    ///                                    None,
+    ///                                    None,
+    ///                                    false)?;
+    ///
+    /// let analysis_results = binwalker.analyze_buf(&file_data, &binwalker.base_target_file, true);
+    ///
+    /// assert_eq!(analysis_results.file_map.len(), 1);
+    /// assert_eq!(analysis_results.extractions.len(),  1);
+    /// assert_eq!(std::path::Path::new(&extraction_directory)
+    ///     .join("gzip.bin.extracted")
+    ///     .join("0")
+    ///     .join("decompressed.bin")
+    ///     .exists(), true);
+    /// # std::fs::remove_dir_all(&extraction_directory);
+    /// # Ok(binwalker)
+    /// # } _doctest_main_src_binwalk_rs_672_0(); }
+    /// ```
+    pub fn analyze_buf(
+        &self,
+        file_data: &[u8],
+        target_file: impl Into<String>,
+        do_extraction: bool,
+    ) -> AnalysisResults {
+        let file_path = target_file.into();
+
+        // Return value
+        let mut results: AnalysisResults = AnalysisResults {
+            file_path: file_path.clone(),
+            ..Default::default()
+        };
+
+        // Scan file data for signatures
+        debug!("Analysis start: {}", file_path);
+        results.file_map = self.scan(file_data);
+
+        // Only extract if told to, and if there were some signatures found in this file
+        if do_extraction && !results.file_map.is_empty() {
+            // Extract everything we can
+            debug!(
+                "Submitting {} signature results to extractor",
+                results.file_map.len()
+            );
+            results.extractions = self.extract(file_data, &file_path, &results.file_map);
+        }
+
+        debug!("Analysis end: {}", file_path);
+
+        results
+    }
+
+    /// Analyze a file on disk and optionally extract its contents.
+    ///
+    /// ## Example
+    ///
+    /// ```
+    /// # fn main() { #[allow(non_snake_case)] fn _doctest_main_src_binwalk_rs_745_0() -> Result<binwalk::Binwalk, binwalk::BinwalkError> {
     /// use binwalk::Binwalk;
     ///
-    /// # std::fs::remove_dir_all("/tmp/foobar");
-    /// let target_path = "/usr/share/man/man2/accept.2.gz".to_string();
-    /// let extraction_directory = "/tmp/foobar/extractions".to_string();
+    /// let target_path = std::path::Path::new("tests")
+    ///     .join("inputs")
+    ///     .join("gzip.bin")
+    ///     .display()
+    ///     .to_string();
     ///
-    /// let binwalker = Binwalk::configure(Some(target_path), Some(extraction_directory), None, None, None).unwrap();
+    /// let extraction_directory = std::path::Path::new("tests")
+    ///     .join("extractions")
+    ///     .display()
+    ///     .to_string();
+    ///
+    /// # std::fs::remove_dir_all(&extraction_directory);
+    /// let binwalker = Binwalk::configure(Some(target_path),
+    ///                                    Some(extraction_directory.clone()),
+    ///                                    None,
+    ///                                    None,
+    ///                                    None,
+    ///                                    false)?;
     ///
     /// let analysis_results = binwalker.analyze(&binwalker.base_target_file, true);
     ///
     /// assert_eq!(analysis_results.file_map.len(), 1);
     /// assert_eq!(analysis_results.extractions.len(),  1);
-    /// assert_eq!(std::path::Path::new("/tmp/foobar/extractions/accept.2.gz.extracted/0/decompressed.bin").exists(), true);
-    /// # std::fs::remove_dir_all("/tmp/foobar");
+    /// assert_eq!(std::path::Path::new(&extraction_directory)
+    ///     .join("gzip.bin.extracted")
+    ///     .join("0")
+    ///     .join("decompressed.bin")
+    ///     .exists(), true);
+    /// # std::fs::remove_dir_all(&extraction_directory);
+    /// # Ok(binwalker)
+    /// # } _doctest_main_src_binwalk_rs_745_0(); }
     /// ```
-    pub fn analyze(&self, target_file: &String, do_extraction: bool) -> AnalysisResults {
-        // Return value
-        let mut results: AnalysisResults = AnalysisResults {
-            file_path: target_file.clone(),
-            ..Default::default()
+    #[allow(dead_code)]
+    pub fn analyze(&self, target_file: impl Into<String>, do_extraction: bool) -> AnalysisResults {
+        let file_path = target_file.into();
+
+        let file_data = match read_file(&file_path) {
+            Err(_) => {
+                error!("Failed to read data from {}", file_path);
+                b"".to_vec()
+            }
+            Ok(data) => data,
         };
 
-        debug!("Analysis start: {}", target_file);
-
-        // Read file into memory
-        if let Ok(file_data) = read_file(target_file) {
-            // Scan file data for signatures
-            info!("Scanning {}", target_file);
-            results.file_map = self.scan(&file_data);
-
-            // Only extract if told to, and if there were some signatures found in this file
-            if do_extraction == true && results.file_map.len() > 0 {
-                // Extract everything we can
-                debug!(
-                    "Submitting {} signature results to extractor",
-                    results.file_map.len()
-                );
-                results.extractions = self.extract(&file_data, &target_file, &results.file_map);
-            }
-        }
-
-        debug!("Analysis end: {}", target_file);
-
-        return results;
+        self.analyze_buf(&file_data, &file_path, do_extraction)
     }
 }
 
 /// Initializes the extraction output directory
 fn init_extraction_directory(
-    target_file: &String,
-    extraction_directory: &String,
+    target_file: &str,
+    extraction_directory: &str,
 ) -> Result<String, std::io::Error> {
     // Create the output directory, equivalent of mkdir -p
-    match fs::create_dir_all(&extraction_directory) {
+    match fs::create_dir_all(extraction_directory) {
         Ok(_) => {
             debug!("Created base output directory: '{}'", extraction_directory);
         }
@@ -713,10 +843,8 @@ fn init_extraction_directory(
     // Create a symlink from inside the extraction directory to the specified target file
     #[cfg(unix)]
     {
-        match unix::fs::symlink(&target_path, &symlink_path) {
-            Ok(_) => {
-                return Ok(symlink_target_path_str);
-            }
+        match unix::fs::symlink(target_path, symlink_path) {
+            Ok(_) => Ok(symlink_target_path_str),
             Err(e) => {
                 error!(
                     "Failed to create symlink {} -> {}: {}",
@@ -724,7 +852,7 @@ fn init_extraction_directory(
                     target_path.display(),
                     e
                 );
-                return Err(e);
+                Err(e)
             }
         }
     }
@@ -773,7 +901,7 @@ fn include_signature(
         return true;
     }
 
-    return true;
+    true
 }
 
 /// Some SignatureResult fields need to be auto-populated.

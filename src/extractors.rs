@@ -96,7 +96,7 @@
 //! }
 //!
 //! /// This function extracts the contents of a FooBar file
-//! pub fn extract_foobar_file(file_data: Vec<u8>, offset: usize, output_directory: Option<&String>) -> ExtractionResult {
+//! pub fn extract_foobar_file(file_data: Vec<u8>, offset: usize, output_directory: Option<&str>) -> ExtractionResult {
 //!
 //!     // This will be the return value
 //!     let mut result = ExtractionResult{..Default::default()};
@@ -140,16 +140,25 @@
 //! ```
 
 pub mod androidsparse;
+pub mod apfs;
 pub mod arcadyan;
+pub mod autel;
+pub mod bmp;
 pub mod bzip2;
 pub mod cab;
 pub mod common;
+pub mod csman;
+pub mod dahua_zip;
 pub mod dmg;
 pub mod dtb;
 pub mod dumpifs;
+pub mod dxbc;
+pub mod encfw;
 pub mod gif;
+pub mod gpg;
 pub mod gzip;
 pub mod inflate;
+pub mod iso9660;
 pub mod jboot;
 pub mod jffs2;
 pub mod jpeg;
@@ -158,7 +167,9 @@ pub mod lz4;
 pub mod lzfse;
 pub mod lzma;
 pub mod lzop;
+pub mod matter_ota;
 pub mod mbr;
+pub mod mh01;
 pub mod pcap;
 pub mod pem;
 pub mod png;
@@ -169,6 +180,7 @@ pub mod sevenzip;
 pub mod squashfs;
 pub mod srec;
 pub mod svg;
+pub mod swapped;
 pub mod tarball;
 pub mod trx;
 pub mod tsk;
@@ -176,7 +188,7 @@ pub mod ubi;
 pub mod uefi;
 pub mod uimage;
 pub mod vxworks;
+pub mod wince;
 pub mod yaffs2;
-pub mod zip;
 pub mod zlib;
 pub mod zstd;

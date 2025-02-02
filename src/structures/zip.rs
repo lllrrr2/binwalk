@@ -1,9 +1,21 @@
 use crate::structures::common::{self, StructureError};
 
+#[derive(Debug, Default, Clone)]
+pub struct ZipFileHeader {
+    pub data_size: usize,
+    pub header_size: usize,
+    pub total_size: usize,
+    pub version_major: usize,
+    pub version_minor: usize,
+}
+
 /// Validate a ZIP file header
-pub fn parse_zip_header(zip_data: &[u8]) -> Result<bool, StructureError> {
+pub fn parse_zip_header(zip_data: &[u8]) -> Result<ZipFileHeader, StructureError> {
     // Unused flag bits
     const UNUSED_FLAGS_MASK: usize = 0b11010111_10000000;
+
+    // Encrypted compression type
+    const COMPRESSION_ENCRYPTED: usize = 99;
 
     let zip_local_file_structure = vec![
         ("magic", "u32"),
@@ -19,8 +31,34 @@ pub fn parse_zip_header(zip_data: &[u8]) -> Result<bool, StructureError> {
         ("extra_field_len", "u16"),
     ];
 
-    let allowed_compression_methods: Vec<usize> =
-        vec![0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 14, 18, 19, 98];
+    let allowed_compression_methods: Vec<usize> = vec![
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        8,
+        9,
+        10,
+        12,
+        14,
+        18,
+        19,
+        20,
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        COMPRESSION_ENCRYPTED,
+    ];
+
+    let mut result = ZipFileHeader {
+        ..Default::default()
+    };
 
     // Parse the ZIP local file structure
     if let Ok(zip_local_file_header) = common::parse(zip_data, &zip_local_file_structure, "little")
@@ -29,12 +67,23 @@ pub fn parse_zip_header(zip_data: &[u8]) -> Result<bool, StructureError> {
         if (zip_local_file_header["flags"] & UNUSED_FLAGS_MASK) == 0 {
             // Specified compression method should be one of the defined ZIP compression methods
             if allowed_compression_methods.contains(&zip_local_file_header["compression"]) {
-                return Ok(true);
+                result.version_major = zip_local_file_header["version"] / 10;
+                result.version_minor = zip_local_file_header["version"] % 10;
+                result.header_size = common::size(&zip_local_file_structure)
+                    + zip_local_file_header["file_name_len"]
+                    + zip_local_file_header["extra_field_len"];
+                result.data_size = if zip_local_file_header["compressed_size"] > 0 {
+                    zip_local_file_header["compressed_size"]
+                } else {
+                    zip_local_file_header["uncompressed_size"]
+                };
+                result.total_size = result.header_size + result.data_size;
+                return Ok(result);
             }
         }
     }
 
-    return Err(StructureError);
+    Err(StructureError)
 }
 
 /// Stores info about a ZIP end-of-central-directory header
@@ -75,5 +124,5 @@ pub fn parse_eocd_header(eocd_data: &[u8]) -> Result<ZipEOCDHeader, StructureErr
         }
     }
 
-    return Err(StructureError);
+    Err(StructureError)
 }

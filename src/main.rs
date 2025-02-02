@@ -20,11 +20,18 @@ mod signatures;
 mod structures;
 
 fn main() {
+    // File name used when reading from stdin
+    const STDIN: &str = "stdin";
+
     // Only use one thread if unable to auto-detect available core info
     const DEFAULT_WORKER_COUNT: usize = 1;
 
     // Number of seconds to wait before printing debug progress info
     const PROGRESS_INTERVAL: u64 = 30;
+
+    // If this env var is set during extraction, the Binwalk.base_target_file symlink will
+    // be deleted at the end of extraction.
+    const BINWALK_RM_SYMLINK: &str = "BINWALK_RM_EXTRACTION_SYMLINK";
 
     // Output directory for extracted files
     let mut output_directory: Option<String> = None;
@@ -45,30 +52,32 @@ fn main() {
     // Initialize logging
     env_logger::init();
 
-    // Process command line aguments
-    let cliargs = cliparser::parse();
+    // Process command line arguments
+    let mut cliargs = cliparser::parse();
 
     // If --list was specified, just display a list of signatures and return
-    if cliargs.list == true {
+    if cliargs.list {
         display::print_signature_list(cliargs.quiet, &magic::patterns());
         return;
     }
 
-    // If --list was not specified, a target file must be provided
-    if cliargs.file_name.is_none() {
-        panic!("No target file name specified! Try --help.");
+    // Set a dummy file name when reading from stdin
+    if cliargs.stdin {
+        cliargs.file_name = Some(STDIN.to_string());
     }
 
+    let mut json_logger = json::JsonLogger::new(cliargs.log);
+
     // If entropy analysis was requested, generate the entropy graph and return
-    if cliargs.entropy == true {
+    if cliargs.entropy {
         display::print_plain(cliargs.quiet, "Calculating file entropy...");
 
-        if let Ok(entropy_results) = entropy::plot(cliargs.file_name.unwrap()) {
+        if let Ok(entropy_results) =
+            entropy::plot(cliargs.file_name.unwrap(), cliargs.stdin, cliargs.png)
+        {
             // Log entropy results to JSON file, if requested
-            json::log(
-                &cliargs.log,
-                json::JSONType::Entropy(entropy_results.clone()),
-            );
+            json_logger.log(json::JSONType::Entropy(entropy_results.clone()));
+            json_logger.close();
 
             display::print_plain(cliargs.quiet, "entropy graph saved to: ");
             display::println_plain(cliargs.quiet, &entropy_results.file);
@@ -79,20 +88,25 @@ fn main() {
         return;
     }
 
-    // If extraction was requested, we need to initialize the output directory
-    if cliargs.extract == true {
+    // If extraction or data carving was requested, we need to initialize the output directory
+    if cliargs.extract || cliargs.carve {
         output_directory = Some(cliargs.directory);
     }
 
     // Initialize binwalk
-    let binwalker = binwalk::Binwalk::configure(
+    let binwalker = match binwalk::Binwalk::configure(
         cliargs.file_name,
         output_directory,
         cliargs.include,
         cliargs.exclude,
         None,
-    )
-    .expect("Binwalk initialization failed");
+        cliargs.search_all,
+    ) {
+        Err(e) => {
+            panic!("Binwalk initialization failed: {}", e.message);
+        }
+        Ok(bw) => bw,
+    };
 
     // If the user specified --threads, honor that request; else, auto-detect available parallelism
     let available_workers = cliargs.threads.unwrap_or_else(|| {
@@ -143,9 +157,9 @@ fn main() {
      * Main loop.
      * Loop until all pending thread jobs are complete and there are no more files in the queue.
      */
-    while target_files.is_empty() == false || workers.active_count() > 0 {
+    while !target_files.is_empty() || workers.active_count() > 0 {
         // If there are files waiting to be analyzed and there is at least one free thread in the pool
-        if target_files.is_empty() == false && workers.active_count() < workers.max_count() {
+        if !target_files.is_empty() && workers.active_count() < workers.max_count() {
             // Get the next file path from the target_files queue
             let target_file = target_files
                 .pop_front()
@@ -156,13 +170,15 @@ fn main() {
                 &workers,
                 binwalker.clone(),
                 target_file,
+                cliargs.stdin && file_count == 0,
                 cliargs.extract,
+                cliargs.carve,
                 worker_tx.clone(),
             );
         }
 
         // Don't spin CPU cycles if there is no backlog of files to analyze
-        if target_files.is_empty() == true {
+        if target_files.is_empty() {
             let sleep_time = time::Duration::from_millis(1);
             thread::sleep(sleep_time);
         }
@@ -184,23 +200,23 @@ fn main() {
             file_count += 1;
 
             // Log analysis results to JSON file
-            json::log(&cliargs.log, json::JSONType::Analysis(results.clone()));
+            json_logger.log(json::JSONType::Analysis(results.clone()));
 
             // Nothing found? Nothing else to do for this file.
-            if results.file_map.len() == 0 {
+            if results.file_map.is_empty() {
                 debug!("Found no results for file {}", results.file_path);
                 continue;
             }
 
             // Print analysis results to screen
-            if should_display(&results, file_count, cliargs.verbose) == true {
+            if should_display(&results, file_count, cliargs.verbose) {
                 display::print_analysis_results(cliargs.quiet, cliargs.extract, &results);
             }
 
             // If running recursively, add extraction results to list of files to analyze
             if cliargs.matryoshka {
                 for (_signature_id, extraction_result) in results.extractions.into_iter() {
-                    if extraction_result.do_not_recurse == false {
+                    if !extraction_result.do_not_recurse {
                         for file_path in extractors::common::get_extracted_files(
                             &extraction_result.output_directory,
                         ) {
@@ -213,13 +229,25 @@ fn main() {
         }
     }
 
+    json_logger.close();
+
+    // If BINWALK_RM_SYMLINK env var was set, delete the base_target_file symlink
+    if (cliargs.carve || cliargs.extract) && std::env::var(BINWALK_RM_SYMLINK).is_ok() {
+        if let Err(e) = std::fs::remove_file(&binwalker.base_target_file) {
+            error!(
+                "Request to remove extraction symlink file {} failed: {}",
+                binwalker.base_target_file, e
+            );
+        }
+    }
+
     // All done, show some basic statistics
     display::print_stats(
         cliargs.quiet,
         run_time,
         file_count,
         binwalker.signature_count,
-        binwalker.patterns.len(),
+        binwalker.pattern_count,
     );
 }
 
@@ -232,22 +260,18 @@ fn should_display(results: &AnalysisResults, file_count: usize, verbose: bool) -
      * contain signatures that we always want displayed, or which contain extractable signatures.
      * This can be overridden with the --verbose command line flag.
      */
-    if file_count == 1 || verbose == true {
+    if file_count == 1 || verbose || !results.extractions.is_empty() {
         display_results = true;
     } else {
-        if results.extractions.len() > 0 {
-            display_results = true;
-        } else {
-            for signature in &results.file_map {
-                if signature.always_display == true {
-                    display_results = true;
-                    break;
-                }
+        for signature in &results.file_map {
+            if signature.always_display {
+                display_results = true;
+                break;
             }
         }
     }
 
-    return display_results;
+    display_results
 }
 
 /// Spawn a worker thread to analyze a file
@@ -255,12 +279,33 @@ fn spawn_worker(
     pool: &ThreadPool,
     bw: binwalk::Binwalk,
     target_file: String,
+    stdin: bool,
     do_extraction: bool,
+    do_carve: bool,
     worker_tx: mpsc::Sender<AnalysisResults>,
 ) {
     pool.execute(move || {
+        // Read in file data
+        let file_data = match common::read_input(&target_file, stdin) {
+            Err(_) => {
+                error!("Failed to read {} data", target_file);
+                b"".to_vec()
+            }
+            Ok(data) => data,
+        };
+
         // Analyze target file, with extraction, if specified
-        let results = bw.analyze(&target_file, do_extraction);
+        let results = bw.analyze_buf(&file_data, &target_file, do_extraction);
+
+        // If data carving was requested as part of extraction, carve analysis results to disk
+        if do_carve {
+            let carve_count = carve_file_map(&file_data, &results);
+            info!(
+                "Carved {} data blocks to disk from {}",
+                carve_count, target_file
+            );
+        }
+
         // Report file results back to main thread
         if let Err(e) = worker_tx.send(results) {
             panic!(
@@ -268,4 +313,88 @@ fn spawn_worker(
             );
         }
     });
+}
+
+/// Carve signatures identified during analysis to separate files on disk.
+/// Returns the number of carved files created.
+/// Note that unknown blocks of file data are also carved to disk, so the number of files
+/// created may be larger than the number of results defined in results.file_map.
+fn carve_file_map(file_data: &[u8], results: &binwalk::AnalysisResults) -> usize {
+    let mut carve_count: usize = 0;
+    let mut last_known_offset: usize = 0;
+    let mut unknown_bytes: Vec<(usize, usize)> = Vec::new();
+
+    // No results, don't do anything
+    if !results.file_map.is_empty() {
+        // Loop through all identified signatures in the file
+        for signature_result in &results.file_map {
+            // If there is data between the last signature and this signature, it is some chunk of unknown data
+            if signature_result.offset > last_known_offset {
+                unknown_bytes.push((
+                    last_known_offset,
+                    signature_result.offset - last_known_offset,
+                ));
+            }
+
+            // Carve this signature's data to disk
+            if carve_file_data_to_disk(
+                &results.file_path,
+                file_data,
+                &signature_result.name,
+                signature_result.offset,
+                signature_result.size,
+            ) {
+                carve_count += 1;
+            }
+
+            // Update the last known offset to the end of this signature's data
+            last_known_offset = signature_result.offset + signature_result.size;
+        }
+
+        // Calculate the size of any remaining data from the end of the last signature to EOF
+        let remaining_data = file_data.len() - last_known_offset;
+
+        // Add any remaining unknown data to the unknown_bytes list
+        if remaining_data > 0 {
+            unknown_bytes.push((last_known_offset, remaining_data));
+        }
+
+        // All known signature data has been carved to disk, now carve any unknown blocks of data to disk
+        for (offset, size) in unknown_bytes {
+            if carve_file_data_to_disk(&results.file_path, file_data, "unknown", offset, size) {
+                carve_count += 1;
+            }
+        }
+    }
+
+    carve_count
+}
+
+/// Carves a block of file data to a new file on disk
+fn carve_file_data_to_disk(
+    source_file_path: &str,
+    file_data: &[u8],
+    name: &str,
+    offset: usize,
+    size: usize,
+) -> bool {
+    let chroot = extractors::common::Chroot::new(None);
+
+    // Carved file path will be: <source file path>_<offset>_<name>.raw
+    let carved_file_path = format!("{}_{}_{}.raw", source_file_path, offset, name,);
+
+    debug!("Carving {}", carved_file_path);
+
+    // Carve the data to disk
+    if !chroot.carve_file(&carved_file_path, file_data, offset, size) {
+        error!(
+            "Failed to carve {} [{:#X}..{:#X}] to disk",
+            carved_file_path,
+            offset,
+            offset + size,
+        );
+        return false;
+    }
+
+    true
 }
